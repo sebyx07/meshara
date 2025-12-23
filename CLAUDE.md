@@ -21,6 +21,22 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **Serialization**: Protocol Buffers for all message types
 - **Architecture**: Event-driven async API with automatic peer discovery and routing
 
+## Documentation Resources
+
+**Detailed Documentation** (`docs/`):
+- Architecture guides covering cryptography, routing, networking, and message flow
+- API references for Node, messaging, events, and authority functionality
+- User guides for getting started, configuration, testing, and examples
+- Security documentation including threat model, cryptographic design, and best practices
+
+**MVP Development Plan** (`mvp/`):
+- Phase-by-phase implementation roadmap with detailed specifications
+- Phase 1: Core foundations (cryptography, protocol buffers, storage, error handling, testing)
+- Phase 2: API layer (node implementation, message construction)
+- Phase 3: Networking (TLS connections, peer discovery)
+- Phase 4: Routing (basic routing, DHT integration)
+- Phase 5: Authority system (authority nodes, update distribution)
+
 ## Development Commands
 
 ### Initial Setup
