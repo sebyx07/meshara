@@ -74,6 +74,43 @@ cargo build --features dev-mode
 cargo build --features "onion-routing,dht"
 ```
 
+## Development Cycle
+
+### Test-Driven Development (TDD)
+
+Follow TDD workflow for all new features and bug fixes:
+
+1. **Write failing test** - Define expected behavior before implementation
+2. **Implement minimal code** - Make the test pass with simplest solution
+3. **Refactor** - Improve code quality while keeping tests green
+4. **Repeat** - Iterate for each component/function
+
+### Pre-Commit Checklist
+
+Before committing any code, ensure ALL of the following pass:
+
+```bash
+# 1. All tests pass
+cargo test
+
+# 2. Linter passes with no warnings
+cargo clippy -- -D warnings
+
+# 3. No compiler warnings
+cargo build --all-features
+
+# 4. Documentation compiles
+cargo doc --no-deps --all-features
+
+# 5. Security audit passes
+cargo audit
+
+# 6. Code is formatted
+cargo fmt -- --check
+```
+
+**Never commit code that fails any of these checks.** This maintains code quality and prevents regressions from entering the codebase.
+
 ## Architecture Overview
 
 ### API Layer Structure
@@ -187,6 +224,54 @@ Never implement crypto primitives - use audited crates:
 - `blake3` for hashing
 
 Keys are always stored encrypted at rest. Passphrase protection uses Argon2 KDF.
+
+### Core Libraries (Don't Reinvent the Wheel)
+
+**Cryptography (RustCrypto)**:
+- `ed25519-dalek` - Ed25519 signatures
+- `x25519-dalek` - X25519 key exchange
+- `chacha20poly1305` - Authenticated encryption
+- `blake3` - Fast hashing
+- `argon2` - Password-based key derivation
+- `zeroize` - Secure memory clearing
+- `rand` / `rand_core` - Cryptographically secure RNG
+
+**Networking**:
+- `rustls` / `tokio-rustls` - Modern TLS 1.3 (no OpenSSL)
+- `h2` - HTTP/2 framing (optional)
+- `mdns-sd` - Local peer discovery via mDNS
+
+**Async Runtime**:
+- `tokio` - Default async runtime (feature: `tokio-runtime`)
+- `smol` - Alternative lightweight runtime (feature: `smol-runtime`)
+- `futures` - Async utilities
+
+**Serialization**:
+- `prost` / `prost-types` - Protocol Buffers codegen
+- `serde` / `serde_json` - General serialization
+- `bincode` - Fast binary encoding
+
+**Data Structures**:
+- `dashmap` - Concurrent HashMap
+- `parking_lot` - Fast locks (Mutex, RwLock)
+- `bytes` - Efficient byte buffers
+
+**Storage**:
+- `redb` - Embedded database (optional, feature: `persistent-storage`)
+
+**Error Handling**:
+- `thiserror` - Custom error types with `#[derive(Error)]`
+- `anyhow` - Context-rich error handling
+
+**Observability**:
+- `tracing` / `tracing-subscriber` - Structured logging
+- `prometheus` - Metrics (optional, feature: `metrics`)
+
+**Dev/Test**:
+- `criterion` - Benchmarking
+- `proptest` - Property-based testing
+- `tokio-test` - Async test utilities
+- `tempfile` - Temporary directories for tests
 
 ### Async Runtime
 
