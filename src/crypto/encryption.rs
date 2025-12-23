@@ -26,7 +26,7 @@ pub struct EncryptedMessage {
 impl EncryptedMessage {
     /// Serialize the encrypted message to bytes
     ///
-    /// Format: [ephemeral_public_key (32)][nonce (12)][ciphertext_len (4)][ciphertext]
+    /// Format: \[ephemeral_public_key (32)\]\[nonce (12)\]\[ciphertext_len (4)\]\[ciphertext\]
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut bytes = Vec::with_capacity(32 + 12 + 4 + self.ciphertext.len());
         bytes.extend_from_slice(&self.ephemeral_public_key);
