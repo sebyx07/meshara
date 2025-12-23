@@ -1,0 +1,31 @@
+# Meshara Rust formatting configuration
+# Only includes stable rustfmt options
+
+# Use edition 2021 formatting rules
+edition = "2021"
+
+# Maximum width for code
+max_width = 100
+
+# Use tab for indentation
+hard_tabs = false
+tab_spaces = 4
+
+# Formatting preferences
+newline_style = "Unix"
+use_small_heuristics = "Default"
+
+# Use field init shorthand when possible
+use_field_init_shorthand = true
+
+# Match formatting
+match_block_trailing_comma = true
+
+# Chain formatting
+chain_width = 60
+
+# Reorder imports (stable)
+reorder_imports = true
+
+# Reorder modules (stable)
+reorder_modules = true

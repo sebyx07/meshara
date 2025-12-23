@@ -1,0 +1,26 @@
+# Meshara Clippy configuration
+
+# Cognitive complexity threshold
+cognitive-complexity-threshold = 30
+
+# Allow these lints (too noisy for our use case)
+# None currently - we want strict linting
+
+# Documentation
+# Require documentation for public items in library crates
+missing-docs-in-crate-items = false
+
+# Pedantic lints (enabled)
+# We enable most pedantic lints but allow some flexibility
+
+# Type complexity
+type-complexity-threshold = 250
+
+# Too many arguments
+too-many-arguments-threshold = 7
+
+# Too many lines
+too-many-lines-threshold = 150
+
+# Single character names
+single-char-binding-names-threshold = 4

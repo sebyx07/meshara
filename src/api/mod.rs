@@ -22,9 +22,7 @@ pub struct NodeBuilder {
 impl NodeBuilder {
     /// Create a new NodeBuilder with default settings
     pub fn new() -> Self {
-        Self {
-            storage_path: None,
-        }
+        Self { storage_path: None }
     }
 
     /// Set the storage path for the node
