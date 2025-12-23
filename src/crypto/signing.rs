@@ -3,6 +3,7 @@
 //! Provides high-level functions for signing and verifying messages.
 
 use super::keys::{Identity, PublicKey};
+use crate::error::Result;
 use ed25519_dalek::{Signature as Ed25519Signature, Signer, Verifier};
 
 /// A digital signature (64 bytes)
@@ -24,7 +25,7 @@ impl Signature {
     /// # Errors
     ///
     /// Returns an error if the bytes don't form a valid signature
-    pub fn from_bytes(bytes: &[u8; 64]) -> Result<Self, crate::Error> {
+    pub fn from_bytes(bytes: &[u8; 64]) -> Result<Self> {
         let sig = Ed25519Signature::from_bytes(bytes);
         Ok(Signature(sig))
     }

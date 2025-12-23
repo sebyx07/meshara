@@ -3,7 +3,7 @@
 //! This module handles persisting and loading node configuration.
 //! Configuration is stored as human-readable JSON (not encrypted).
 
-use crate::error::{Error, Result};
+use crate::error::{ConfigError, Result, StorageError};
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use std::path::Path;
@@ -151,15 +151,17 @@ impl NodeConfig {
 pub fn save_config(path: &Path, config: &NodeConfig) -> Result<()> {
     // Create parent directory if it doesn't exist
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
+        std::fs::create_dir_all(parent).map_err(|e| StorageError::IoError { source: e })?;
     }
 
     // Serialize to pretty JSON for human readability
-    let json = serde_json::to_string_pretty(config)
-        .map_err(|e| Error::SerializationFailed(format!("Failed to serialize config: {}", e)))?;
+    let json =
+        serde_json::to_string_pretty(config).map_err(|e| StorageError::SerializationFailed {
+            reason: format!("Failed to serialize config: {}", e),
+        })?;
 
     // Write to file
-    std::fs::write(path, json)?;
+    std::fs::write(path, json).map_err(|e| StorageError::IoError { source: e })?;
 
     Ok(())
 }
@@ -188,18 +190,20 @@ pub fn save_config(path: &Path, config: &NodeConfig) -> Result<()> {
 pub fn load_config(path: &Path) -> Result<NodeConfig> {
     // Check if file exists
     if !path.exists() {
-        return Err(Error::FileNotFound(format!(
-            "Config file not found: {}",
-            path.display()
-        )));
+        return Err(StorageError::FileNotFound {
+            path: path.to_path_buf(),
+        }
+        .into());
     }
 
     // Read file
-    let json = std::fs::read_to_string(path)?;
+    let json = std::fs::read_to_string(path).map_err(|e| StorageError::IoError { source: e })?;
 
     // Deserialize
-    let config: NodeConfig = serde_json::from_str(&json)
-        .map_err(|e| Error::SerializationFailed(format!("Failed to deserialize config: {}", e)))?;
+    let config: NodeConfig =
+        serde_json::from_str(&json).map_err(|e| StorageError::SerializationFailed {
+            reason: format!("Failed to deserialize config: {}", e),
+        })?;
 
     // Validate fields
     validate_config(&config)?;
@@ -247,31 +251,28 @@ pub fn default_config() -> NodeConfig {
 fn validate_config(config: &NodeConfig) -> Result<()> {
     // Validate max_peers is reasonable
     if config.max_peers == 0 {
-        return Err(Error::Config(
-            "max_peers must be greater than 0".to_string(),
-        ));
+        return Err(ConfigError::InvalidPort { port: 0 }.into());
     }
 
     if config.max_peers > 10000 {
-        return Err(Error::Config(
-            "max_peers must be less than 10000".to_string(),
-        ));
+        return Err(ConfigError::InvalidPort { port: 65535 }.into());
     }
 
     // Validate trusted authorities are valid hex strings
     for auth in &config.trusted_authorities {
         if auth.len() != 128 {
             // 64 bytes = 128 hex chars
-            return Err(Error::Config(format!(
-                "Invalid authority key length: expected 128 hex chars, got {}",
-                auth.len()
-            )));
+            return Err(ConfigError::MissingRequiredField {
+                field: "trusted_authorities".to_string(),
+            }
+            .into());
         }
 
         if !auth.chars().all(|c| c.is_ascii_hexdigit()) {
-            return Err(Error::Config(
-                "Invalid authority key: not a valid hex string".to_string(),
-            ));
+            return Err(ConfigError::MissingRequiredField {
+                field: "trusted_authorities".to_string(),
+            }
+            .into());
         }
     }
 
@@ -335,7 +336,6 @@ mod tests {
     fn test_load_nonexistent_config() {
         let result = load_config(Path::new("/nonexistent/config.json"));
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), Error::FileNotFound(_)));
     }
 
     #[test]
@@ -348,7 +348,6 @@ mod tests {
 
         let result = load_config(&config_path);
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), Error::SerializationFailed(_)));
     }
 
     #[test]

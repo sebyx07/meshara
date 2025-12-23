@@ -3,7 +3,7 @@
 //! Provides high-level functions for encrypting and decrypting messages between nodes.
 
 use super::keys::{Identity, PublicKey};
-use crate::Error;
+use crate::error::{CryptoError, Result};
 use chacha20poly1305::{
     aead::{Aead, KeyInit, OsRng},
     ChaCha20Poly1305, Nonce,
@@ -37,9 +37,12 @@ impl EncryptedMessage {
     }
 
     /// Deserialize an encrypted message from bytes
-    pub fn from_bytes(data: &[u8]) -> Result<Self, Error> {
+    pub fn from_bytes(data: &[u8]) -> Result<Self> {
         if data.len() < 32 + 12 + 4 {
-            return Err(Error::Crypto("Encrypted message too short".to_string()));
+            return Err(CryptoError::InvalidEncryptedData {
+                context: "Encrypted message too short".to_string(),
+            }
+            .into());
         }
 
         let mut ephemeral_public_key = [0u8; 32];
@@ -51,7 +54,10 @@ impl EncryptedMessage {
         let ciphertext_len = u32::from_le_bytes([data[44], data[45], data[46], data[47]]) as usize;
 
         if data.len() < 48 + ciphertext_len {
-            return Err(Error::Crypto("Incomplete ciphertext".to_string()));
+            return Err(CryptoError::InvalidEncryptedData {
+                context: "Incomplete ciphertext".to_string(),
+            }
+            .into());
         }
 
         let ciphertext = data[48..48 + ciphertext_len].to_vec();
@@ -91,7 +97,7 @@ pub fn encrypt_for_recipient(
     _sender_identity: &Identity,
     recipient_public_key: &PublicKey,
     plaintext: &[u8],
-) -> Result<EncryptedMessage, Error> {
+) -> Result<EncryptedMessage> {
     // Generate ephemeral keypair for this message
     let ephemeral_secret = X25519StaticSecret::random_from_rng(OsRng);
     let ephemeral_public = X25519PublicKey::from(&ephemeral_secret);
@@ -113,9 +119,12 @@ pub fn encrypt_for_recipient(
     let nonce = Nonce::from_slice(&nonce_bytes);
 
     // Encrypt
-    let ciphertext = cipher
-        .encrypt(nonce, plaintext)
-        .map_err(|e| Error::Crypto(format!("Encryption failed: {}", e)))?;
+    let ciphertext =
+        cipher
+            .encrypt(nonce, plaintext)
+            .map_err(|e| CryptoError::EncryptionFailed {
+                reason: format!("ChaCha20-Poly1305 encryption failed: {}", e),
+            })?;
 
     // Zeroize sensitive data
     encryption_key.zeroize();
@@ -162,7 +171,7 @@ pub fn encrypt_for_recipient(
 pub fn decrypt_message(
     recipient_identity: &Identity,
     encrypted: &EncryptedMessage,
-) -> Result<Vec<u8>, Error> {
+) -> Result<Vec<u8>> {
     // Reconstruct ephemeral public key
     let ephemeral_public = X25519PublicKey::from(encrypted.ephemeral_public_key);
 
@@ -183,8 +192,8 @@ pub fn decrypt_message(
     let nonce = Nonce::from_slice(&encrypted.nonce);
     let plaintext = cipher
         .decrypt(nonce, encrypted.ciphertext.as_ref())
-        .map_err(|_| {
-            Error::Crypto("Decryption failed (authentication tag mismatch)".to_string())
+        .map_err(|_| CryptoError::DecryptionFailed {
+            reason: "ChaCha20-Poly1305 decryption failed (authentication tag mismatch)".to_string(),
         })?;
 
     // Zeroize sensitive data

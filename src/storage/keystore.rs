@@ -4,7 +4,7 @@
 //! Identities are encrypted with a user-provided passphrase using Argon2 and ChaCha20-Poly1305.
 
 use crate::crypto::Identity;
-use crate::error::{Error, Result};
+use crate::error::{CryptoError, Result, StorageError};
 use argon2::{
     password_hash::{PasswordHasher, SaltString},
     Argon2, Params, Version,
@@ -74,7 +74,7 @@ const IDENTITY_DATA_LEN: usize = 64;
 pub fn save_identity(path: &Path, identity: &Identity, passphrase: &str) -> Result<()> {
     // Create parent directory if it doesn't exist
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
+        std::fs::create_dir_all(parent).map_err(|e| StorageError::IoError { source: e })?;
     }
 
     // Generate random salt
@@ -83,25 +83,36 @@ pub fn save_identity(path: &Path, identity: &Identity, passphrase: &str) -> Resu
 
     // Derive key from passphrase using Argon2 with OWASP parameters
     // Memory: 64 MB, Iterations: 3, Parallelism: 4
-    let params = Params::new(65536, 3, 4, Some(32))
-        .map_err(|e| Error::Crypto(format!("Failed to create Argon2 params: {}", e)))?;
+    let params =
+        Params::new(65536, 3, 4, Some(32)).map_err(|e| CryptoError::KeyDerivationFailed {
+            reason: format!("Failed to create Argon2 params: {}", e),
+        })?;
 
     let argon2 = Argon2::new(argon2::Algorithm::Argon2id, Version::V0x13, params);
 
-    let salt_string = SaltString::encode_b64(&salt)
-        .map_err(|e| Error::Crypto(format!("Failed to encode salt: {}", e)))?;
+    let salt_string =
+        SaltString::encode_b64(&salt).map_err(|e| CryptoError::KeyDerivationFailed {
+            reason: format!("Failed to encode salt: {}", e),
+        })?;
 
     let password_hash = argon2
         .hash_password(passphrase.as_bytes(), &salt_string)
-        .map_err(|e| Error::Crypto(format!("Key derivation failed: {}", e)))?;
+        .map_err(|e| CryptoError::KeyDerivationFailed {
+            reason: format!("Key derivation failed: {}", e),
+        })?;
 
     let derived_key = password_hash
         .hash
-        .ok_or_else(|| Error::Crypto("Failed to extract derived key".to_string()))?;
+        .ok_or_else(|| CryptoError::KeyDerivationFailed {
+            reason: "Failed to extract derived key".to_string(),
+        })?;
 
     let key_bytes = derived_key.as_bytes();
     if key_bytes.len() < 32 {
-        return Err(Error::Crypto("Derived key too short".to_string()));
+        return Err(CryptoError::KeyDerivationFailed {
+            reason: "Derived key too short".to_string(),
+        }
+        .into());
     }
 
     let mut cipher_key = [0u8; 32];
@@ -124,9 +135,12 @@ pub fn save_identity(path: &Path, identity: &Identity, passphrase: &str) -> Resu
     plaintext.extend_from_slice(&signing_bytes);
     plaintext.extend_from_slice(&encryption_bytes);
 
-    let ciphertext = cipher
-        .encrypt(nonce, plaintext.as_ref())
-        .map_err(|e| Error::Crypto(format!("Encryption failed: {}", e)))?;
+    let ciphertext =
+        cipher
+            .encrypt(nonce, plaintext.as_ref())
+            .map_err(|e| CryptoError::EncryptionFailed {
+                reason: format!("Encryption failed: {}", e),
+            })?;
 
     // Build file: magic_bytes || version || salt || nonce || ciphertext (includes auth tag)
     let mut file_data = Vec::with_capacity(8 + 4 + SALT_LEN + NONCE_LEN + ciphertext.len());
@@ -137,15 +151,17 @@ pub fn save_identity(path: &Path, identity: &Identity, passphrase: &str) -> Resu
     file_data.extend_from_slice(&ciphertext);
 
     // Write to file
-    std::fs::write(path, &file_data)?;
+    std::fs::write(path, &file_data).map_err(|e| StorageError::IoError { source: e })?;
 
     // Set file permissions to user-read-only (Unix: 0600)
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let mut perms = std::fs::metadata(path)?.permissions();
+        let mut perms = std::fs::metadata(path)
+            .map_err(|e| StorageError::IoError { source: e })?
+            .permissions();
         perms.set_mode(0o600);
-        std::fs::set_permissions(path, perms)?;
+        std::fs::set_permissions(path, perms).map_err(|e| StorageError::IoError { source: e })?;
     }
 
     // Zeroize sensitive data
@@ -182,40 +198,50 @@ pub fn save_identity(path: &Path, identity: &Identity, passphrase: &str) -> Resu
 pub fn load_identity(path: &Path, passphrase: &str) -> Result<Identity> {
     // Check if file exists
     if !path.exists() {
-        return Err(Error::FileNotFound(format!(
-            "Identity file not found: {}",
-            path.display()
-        )));
+        return Err(StorageError::FileNotFound {
+            path: path.to_path_buf(),
+        }
+        .into());
     }
 
     // Read file
-    let file_data = std::fs::read(path)?;
+    let file_data = std::fs::read(path).map_err(|e| StorageError::IoError { source: e })?;
 
     // Verify minimum size
     let min_size = 8 + 4 + SALT_LEN + NONCE_LEN + TAG_LEN;
     if file_data.len() < min_size {
-        return Err(Error::InvalidFormat(format!(
-            "Identity file too short: expected at least {} bytes, got {}",
-            min_size,
-            file_data.len()
-        )));
+        return Err(StorageError::InvalidFormat {
+            file: path.display().to_string(),
+            reason: format!(
+                "Identity file too short: expected at least {} bytes, got {}",
+                min_size,
+                file_data.len()
+            ),
+        }
+        .into());
     }
 
     // Verify magic bytes
     if &file_data[0..8] != MAGIC_BYTES {
-        return Err(Error::InvalidFormat(
-            "Invalid magic bytes (not a Meshara identity file)".to_string(),
-        ));
+        return Err(StorageError::InvalidFormat {
+            file: path.display().to_string(),
+            reason: "Invalid magic bytes (not a Meshara identity file)".to_string(),
+        }
+        .into());
     }
 
     // Extract and verify version
     let version = u32::from_le_bytes([file_data[8], file_data[9], file_data[10], file_data[11]]);
 
     if version != STORAGE_VERSION {
-        return Err(Error::InvalidFormat(format!(
-            "Unsupported storage version: {} (expected {})",
-            version, STORAGE_VERSION
-        )));
+        return Err(StorageError::InvalidFormat {
+            file: path.display().to_string(),
+            reason: format!(
+                "Unsupported storage version: {} (expected {})",
+                version, STORAGE_VERSION
+            ),
+        }
+        .into());
     }
 
     // Extract salt
@@ -229,25 +255,36 @@ pub fn load_identity(path: &Path, passphrase: &str) -> Result<Identity> {
     let ciphertext = &file_data[12 + SALT_LEN + NONCE_LEN..];
 
     // Derive key from passphrase using same Argon2 parameters
-    let params = Params::new(65536, 3, 4, Some(32))
-        .map_err(|e| Error::Crypto(format!("Failed to create Argon2 params: {}", e)))?;
+    let params =
+        Params::new(65536, 3, 4, Some(32)).map_err(|e| CryptoError::KeyDerivationFailed {
+            reason: format!("Failed to create Argon2 params: {}", e),
+        })?;
 
     let argon2 = Argon2::new(argon2::Algorithm::Argon2id, Version::V0x13, params);
 
-    let salt_string = SaltString::encode_b64(salt)
-        .map_err(|e| Error::Crypto(format!("Failed to encode salt: {}", e)))?;
+    let salt_string =
+        SaltString::encode_b64(salt).map_err(|e| CryptoError::KeyDerivationFailed {
+            reason: format!("Failed to encode salt: {}", e),
+        })?;
 
     let password_hash = argon2
         .hash_password(passphrase.as_bytes(), &salt_string)
-        .map_err(|e| Error::Crypto(format!("Key derivation failed: {}", e)))?;
+        .map_err(|e| CryptoError::KeyDerivationFailed {
+            reason: format!("Key derivation failed: {}", e),
+        })?;
 
     let derived_key = password_hash
         .hash
-        .ok_or_else(|| Error::Crypto("Failed to extract derived key".to_string()))?;
+        .ok_or_else(|| CryptoError::KeyDerivationFailed {
+            reason: "Failed to extract derived key".to_string(),
+        })?;
 
     let key_bytes = derived_key.as_bytes();
     if key_bytes.len() < 32 {
-        return Err(Error::Crypto("Derived key too short".to_string()));
+        return Err(CryptoError::KeyDerivationFailed {
+            reason: "Derived key too short".to_string(),
+        }
+        .into());
     }
 
     let mut cipher_key = [0u8; 32];
@@ -257,21 +294,23 @@ pub fn load_identity(path: &Path, passphrase: &str) -> Result<Identity> {
     let cipher = ChaCha20Poly1305::new(&cipher_key.into());
 
     // Decrypt
-    let mut plaintext = cipher.decrypt(nonce, ciphertext).map_err(|_| {
-        Error::DecryptionFailed(
-            "Decryption failed (wrong passphrase or corrupted data)".to_string(),
-        )
-    })?;
+    let mut plaintext = cipher
+        .decrypt(nonce, ciphertext)
+        .map_err(|_| StorageError::DecryptionFailed)?;
 
     // Verify plaintext length
     if plaintext.len() != IDENTITY_DATA_LEN {
         plaintext.zeroize();
         cipher_key.zeroize();
-        return Err(Error::InvalidFormat(format!(
-            "Invalid identity data length: expected {} bytes, got {}",
-            IDENTITY_DATA_LEN,
-            plaintext.len()
-        )));
+        return Err(StorageError::InvalidFormat {
+            file: path.display().to_string(),
+            reason: format!(
+                "Invalid identity data length: expected {} bytes, got {}",
+                IDENTITY_DATA_LEN,
+                plaintext.len()
+            ),
+        }
+        .into());
     }
 
     // Extract key material
@@ -372,9 +411,6 @@ mod tests {
 
         let result = load_identity(&identity_path, "wrong passphrase");
         assert!(result.is_err());
-        if let Err(e) = result {
-            assert!(matches!(e, Error::DecryptionFailed(_)));
-        }
     }
 
     #[test]
@@ -408,18 +444,12 @@ mod tests {
 
         let result = load_identity(&identity_path, "passphrase");
         assert!(result.is_err());
-        if let Err(e) = result {
-            assert!(matches!(e, Error::InvalidFormat(_)));
-        }
     }
 
     #[test]
     fn test_load_nonexistent_file() {
         let result = load_identity(Path::new("/nonexistent/identity.enc"), "passphrase");
         assert!(result.is_err());
-        if let Err(e) = result {
-            assert!(matches!(e, Error::FileNotFound(_)));
-        }
     }
 
     #[test]

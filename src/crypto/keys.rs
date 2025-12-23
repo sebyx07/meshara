@@ -3,7 +3,7 @@
 //! This module defines the Identity and PublicKey types that represent
 //! a node's cryptographic identity in the Meshara network.
 
-use crate::error::Error;
+use crate::error::{CryptoError, Result};
 use argon2::{
     password_hash::{PasswordHasher, SaltString},
     Argon2,
@@ -134,7 +134,7 @@ impl Identity {
     /// let encrypted = identity.export_encrypted("strong passphrase").unwrap();
     /// // Save encrypted data to disk
     /// ```
-    pub fn export_encrypted(&self, passphrase: &str) -> Result<Vec<u8>, Error> {
+    pub fn export_encrypted(&self, passphrase: &str) -> Result<Vec<u8>> {
         // Generate random salt for Argon2
         let salt = SaltString::generate(&mut OsRng);
 
@@ -142,16 +142,23 @@ impl Identity {
         let argon2 = Argon2::default();
         let password_hash = argon2
             .hash_password(passphrase.as_bytes(), &salt)
-            .map_err(|e| Error::Crypto(format!("Key derivation failed: {}", e)))?;
+            .map_err(|e| CryptoError::KeyDerivationFailed {
+                reason: format!("Key derivation failed: {}", e),
+            })?;
 
         // Extract the derived key (32 bytes for ChaCha20-Poly1305)
         let derived_key = password_hash
             .hash
-            .ok_or_else(|| Error::Crypto("Failed to extract derived key".to_string()))?;
+            .ok_or_else(|| CryptoError::KeyDerivationFailed {
+                reason: "Failed to extract derived key".to_string(),
+            })?;
 
         let key_bytes = derived_key.as_bytes();
         if key_bytes.len() < 32 {
-            return Err(Error::Crypto("Derived key too short".to_string()));
+            return Err(CryptoError::KeyDerivationFailed {
+                reason: "Derived key too short".to_string(),
+            }
+            .into());
         }
 
         let mut cipher_key = [0u8; 32];
@@ -174,9 +181,11 @@ impl Identity {
         plaintext.extend_from_slice(&encryption_bytes);
 
         // Encrypt
-        let ciphertext = cipher
-            .encrypt(nonce, plaintext.as_ref())
-            .map_err(|e| Error::Crypto(format!("Encryption failed: {}", e)))?;
+        let ciphertext = cipher.encrypt(nonce, plaintext.as_ref()).map_err(|e| {
+            CryptoError::EncryptionFailed {
+                reason: format!("Encryption failed: {}", e),
+            }
+        })?;
 
         // Build output: salt || nonce || ciphertext (includes auth tag)
         let salt_bytes = salt.as_str().as_bytes();
@@ -218,19 +227,26 @@ impl Identity {
     /// # let encrypted = identity.export_encrypted("strong passphrase").unwrap();
     /// let imported = Identity::import_encrypted(&encrypted, "strong passphrase").unwrap();
     /// ```
-    pub fn import_encrypted(data: &[u8], passphrase: &str) -> Result<Self, Error> {
+    pub fn import_encrypted(data: &[u8], passphrase: &str) -> Result<Self> {
         // Salt string is variable length but typically ~22 chars for base64
         // We'll look for the end of the salt string (should end with specific chars)
         // For simplicity, SaltString encoding is predictable - it's 22 chars
         if data.len() < 22 + 12 + 16 {
-            return Err(Error::Crypto("Encrypted data too short".to_string()));
+            return Err(CryptoError::InvalidEncryptedData {
+                context: "Encrypted data too short".to_string(),
+            }
+            .into());
         }
 
         // Extract salt (first 22 bytes for SaltString)
-        let salt_str = std::str::from_utf8(&data[..22])
-            .map_err(|_| Error::Crypto("Invalid salt encoding".to_string()))?;
-        let salt = SaltString::from_b64(salt_str)
-            .map_err(|_| Error::Crypto("Invalid salt".to_string()))?;
+        let salt_str =
+            std::str::from_utf8(&data[..22]).map_err(|_| CryptoError::InvalidEncryptedData {
+                context: "Invalid salt encoding".to_string(),
+            })?;
+        let salt =
+            SaltString::from_b64(salt_str).map_err(|_| CryptoError::InvalidEncryptedData {
+                context: "Invalid salt".to_string(),
+            })?;
 
         // Extract nonce (next 12 bytes)
         let nonce_bytes = &data[22..34];
@@ -243,15 +259,22 @@ impl Identity {
         let argon2 = Argon2::default();
         let password_hash = argon2
             .hash_password(passphrase.as_bytes(), &salt)
-            .map_err(|e| Error::Crypto(format!("Key derivation failed: {}", e)))?;
+            .map_err(|e| CryptoError::KeyDerivationFailed {
+                reason: format!("Key derivation failed: {}", e),
+            })?;
 
         let derived_key = password_hash
             .hash
-            .ok_or_else(|| Error::Crypto("Failed to extract derived key".to_string()))?;
+            .ok_or_else(|| CryptoError::KeyDerivationFailed {
+                reason: "Failed to extract derived key".to_string(),
+            })?;
 
         let key_bytes = derived_key.as_bytes();
         if key_bytes.len() < 32 {
-            return Err(Error::Crypto("Derived key too short".to_string()));
+            return Err(CryptoError::KeyDerivationFailed {
+                reason: "Derived key too short".to_string(),
+            }
+            .into());
         }
 
         let mut cipher_key = [0u8; 32];
@@ -261,14 +284,20 @@ impl Identity {
         let cipher = ChaCha20Poly1305::new(&cipher_key.into());
 
         // Decrypt
-        let mut plaintext = cipher.decrypt(nonce, ciphertext).map_err(|_| {
-            Error::Crypto("Decryption failed (wrong passphrase or corrupted data)".to_string())
-        })?;
+        let mut plaintext =
+            cipher
+                .decrypt(nonce, ciphertext)
+                .map_err(|_| CryptoError::DecryptionFailed {
+                    reason: "Decryption failed (wrong passphrase or corrupted data)".to_string(),
+                })?;
 
         // Verify length
         if plaintext.len() != 64 {
             plaintext.zeroize();
-            return Err(Error::Crypto("Invalid identity data length".to_string()));
+            return Err(CryptoError::InvalidEncryptedData {
+                context: "Invalid identity data length".to_string(),
+            }
+            .into());
         }
 
         // Extract keys
@@ -379,25 +408,33 @@ impl PublicKey {
     /// # Errors
     ///
     /// Returns an error if the data is not exactly 64 bytes or is invalid.
-    pub fn from_bytes(data: &[u8]) -> Result<Self, Error> {
+    pub fn from_bytes(data: &[u8]) -> Result<Self> {
         if data.len() != 64 {
-            return Err(Error::Crypto(format!(
-                "Invalid public key length: expected 64 bytes, got {}",
-                data.len()
-            )));
+            return Err(CryptoError::InvalidKeyLength {
+                expected: 64,
+                got: data.len(),
+            }
+            .into());
         }
 
-        let signing_key = VerifyingKey::from_bytes(
-            data[..32]
-                .try_into()
-                .map_err(|_| Error::Crypto("Invalid signing key".to_string()))?,
-        )
-        .map_err(|e| Error::Crypto(format!("Invalid signing key: {}", e)))?;
+        let signing_key = VerifyingKey::from_bytes(data[..32].try_into().map_err(|_| {
+            CryptoError::InvalidKeyLength {
+                expected: 32,
+                got: data[..32].len(),
+            }
+        })?)
+        .map_err(|_e| CryptoError::InvalidKeyLength {
+            expected: 32,
+            got: 0,
+        })?;
 
-        let encryption_key = X25519PublicKey::from(
-            <[u8; 32]>::try_from(&data[32..64])
-                .map_err(|_| Error::Crypto("Invalid encryption key".to_string()))?,
-        );
+        let encryption_key =
+            X25519PublicKey::from(<[u8; 32]>::try_from(&data[32..64]).map_err(|_| {
+                CryptoError::InvalidKeyLength {
+                    expected: 32,
+                    got: data[32..64].len(),
+                }
+            })?);
 
         Ok(Self {
             signing_key,

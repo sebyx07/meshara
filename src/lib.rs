@@ -32,7 +32,7 @@ pub mod storage;
 
 // Re-export main types
 pub use api::{Node, NodeBuilder};
-pub use error::Error;
-
-/// Result type alias using Meshara's error type
-pub type Result<T> = std::result::Result<T, Error>;
+pub use error::{
+    AuthorityError, ConfigError, CryptoError, MesharaError, NetworkError, ProtocolError, Result,
+    RoutingError, StorageError,
+};

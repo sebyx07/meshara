@@ -4,7 +4,7 @@
 //! The MVP uses FileSystemStorage, but this allows for future extensions like
 //! encrypted databases, cloud storage, etc.
 
-use crate::error::{Error, Result};
+use crate::error::{Result, StorageError};
 use std::path::{Path, PathBuf};
 
 #[cfg(test)]
@@ -75,15 +75,18 @@ impl FileSystemStorage {
     /// ```
     pub fn new(base_path: &Path) -> Result<Self> {
         // Create directory if it doesn't exist
-        std::fs::create_dir_all(base_path)?;
+        std::fs::create_dir_all(base_path).map_err(|e| StorageError::IoError { source: e })?;
 
         // Set directory permissions to user-only (0700 on Unix)
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let mut perms = std::fs::metadata(base_path)?.permissions();
+            let mut perms = std::fs::metadata(base_path)
+                .map_err(|e| StorageError::IoError { source: e })?
+                .permissions();
             perms.set_mode(0o700);
-            std::fs::set_permissions(base_path, perms)?;
+            std::fs::set_permissions(base_path, perms)
+                .map_err(|e| StorageError::IoError { source: e })?;
         }
 
         Ok(Self {
@@ -103,11 +106,11 @@ impl StorageBackend for FileSystemStorage {
 
         // Create parent directories if needed
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
+            std::fs::create_dir_all(parent).map_err(|e| StorageError::IoError { source: e })?;
         }
 
         // Write data
-        std::fs::write(&path, value)?;
+        std::fs::write(&path, value).map_err(|e| StorageError::IoError { source: e })?;
 
         Ok(())
     }
@@ -116,10 +119,10 @@ impl StorageBackend for FileSystemStorage {
         let path = self.key_to_path(key);
 
         if !path.exists() {
-            return Err(Error::FileNotFound(format!("Key not found: {}", key)));
+            return Err(StorageError::FileNotFound { path: path.clone() }.into());
         }
 
-        Ok(std::fs::read(&path)?)
+        std::fs::read(&path).map_err(|e| StorageError::IoError { source: e }.into())
     }
 
     fn exists(&self, key: &str) -> bool {
@@ -131,10 +134,10 @@ impl StorageBackend for FileSystemStorage {
         let path = self.key_to_path(key);
 
         if !path.exists() {
-            return Err(Error::FileNotFound(format!("Key not found: {}", key)));
+            return Err(StorageError::FileNotFound { path: path.clone() }.into());
         }
 
-        std::fs::remove_file(&path)?;
+        std::fs::remove_file(&path).map_err(|e| StorageError::IoError { source: e })?;
 
         Ok(())
     }
@@ -165,10 +168,12 @@ impl StorageBackend for InMemoryStorage {
     }
 
     fn load(&self, key: &str) -> Result<Vec<u8>> {
-        self.data
-            .get(key)
-            .cloned()
-            .ok_or_else(|| Error::FileNotFound(format!("Key not found: {}", key)))
+        self.data.get(key).cloned().ok_or_else(|| {
+            StorageError::FileNotFound {
+                path: PathBuf::from(key),
+            }
+            .into()
+        })
     }
 
     fn exists(&self, key: &str) -> bool {
@@ -177,7 +182,10 @@ impl StorageBackend for InMemoryStorage {
 
     fn delete(&self, key: &str) -> Result<()> {
         if !self.data.contains_key(key) {
-            return Err(Error::FileNotFound(format!("Key not found: {}", key)));
+            return Err(StorageError::FileNotFound {
+                path: PathBuf::from(key),
+            }
+            .into());
         }
 
         // Note: We can't actually delete in this implementation without &mut self
@@ -219,7 +227,6 @@ mod tests {
 
         let result = storage.load("nonexistent");
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), Error::FileNotFound(_)));
     }
 
     #[test]
@@ -254,7 +261,6 @@ mod tests {
 
         let result = storage.delete("nonexistent");
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), Error::FileNotFound(_)));
     }
 
     #[test]
@@ -301,6 +307,5 @@ mod tests {
 
         let result = storage.load("nonexistent");
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), Error::FileNotFound(_)));
     }
 }

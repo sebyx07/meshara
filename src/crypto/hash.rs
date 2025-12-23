@@ -3,6 +3,7 @@
 //! Provides fast, secure hashing for message IDs and node IDs.
 
 use super::keys::PublicKey;
+use crate::error::{CryptoError, Result};
 
 /// A unique identifier for a message (32-byte Blake3 hash)
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -28,17 +29,21 @@ impl MessageId {
     }
 
     /// Parse from hexadecimal string
-    pub fn from_hex(s: &str) -> Result<Self, crate::Error> {
+    pub fn from_hex(s: &str) -> Result<Self> {
         if s.len() != 64 {
-            return Err(crate::Error::Crypto(
-                "Invalid hex string length for MessageId".to_string(),
-            ));
+            return Err(CryptoError::InvalidEncryptedData {
+                context: "Invalid hex string length for MessageId".to_string(),
+            }
+            .into());
         }
 
         let mut bytes = [0u8; 32];
         for i in 0..32 {
-            bytes[i] = u8::from_str_radix(&s[i * 2..i * 2 + 2], 16)
-                .map_err(|_| crate::Error::Crypto("Invalid hex character".to_string()))?;
+            bytes[i] = u8::from_str_radix(&s[i * 2..i * 2 + 2], 16).map_err(|_| {
+                CryptoError::InvalidEncryptedData {
+                    context: "Invalid hex character".to_string(),
+                }
+            })?;
         }
 
         Ok(Self(bytes))
@@ -75,17 +80,21 @@ impl NodeId {
     }
 
     /// Parse from hexadecimal string
-    pub fn from_hex(s: &str) -> Result<Self, crate::Error> {
+    pub fn from_hex(s: &str) -> Result<Self> {
         if s.len() != 64 {
-            return Err(crate::Error::Crypto(
-                "Invalid hex string length for NodeId".to_string(),
-            ));
+            return Err(CryptoError::InvalidEncryptedData {
+                context: "Invalid hex string length for NodeId".to_string(),
+            }
+            .into());
         }
 
         let mut bytes = [0u8; 32];
         for i in 0..32 {
-            bytes[i] = u8::from_str_radix(&s[i * 2..i * 2 + 2], 16)
-                .map_err(|_| crate::Error::Crypto("Invalid hex character".to_string()))?;
+            bytes[i] = u8::from_str_radix(&s[i * 2..i * 2 + 2], 16).map_err(|_| {
+                CryptoError::InvalidEncryptedData {
+                    context: "Invalid hex character".to_string(),
+                }
+            })?;
         }
 
         Ok(Self(bytes))
