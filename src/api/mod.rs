@@ -1,6 +1,6 @@
 //! High-level API for Meshara
 
-use crate::{Error, Result};
+use crate::Result;
 
 /// Main node instance
 pub struct Node {
