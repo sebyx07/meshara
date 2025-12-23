@@ -1,0 +1,1133 @@
+# Meshara Library - Developer-Focused Specification
+
+## Library Design Philosophy
+
+**Target Audience**: Application developers who want to add decentralized, privacy-preserving communication to their apps without becoming cryptography or networking experts.
+
+**Developer Experience Goals**:
+- Simple, intuitive API that hides complexity
+- Sensible defaults that "just work"
+- Clear documentation with examples
+- Type-safe interfaces
+- Minimal boilerplate
+
+---
+
+## Message Format: Encrypted Protocol Buffers
+
+### Why Protocol Buffers
+
+**Advantages over JSON**:
+- Binary format (smaller, faster)
+- Strong typing with schema
+- Forward/backward compatibility
+- Efficient serialization/deserialization
+- Cross-language support
+- Better obfuscation (not human-readable)
+
+### Protocol Buffer Schema Design
+
+**Core Message Schema**:
+
+Define protobuf schema for all message types. The schema should be versioned to allow evolution.
+
+**BaseMessage**:
+```
+Schema defines:
+- version (uint32): Protocol version
+- message_id (bytes): 32-byte unique identifier (Blake3 hash)
+- message_type (enum): Broadcast, PrivateMessage, UpdatePackage, Query, Response
+- timestamp (int64): Unix timestamp in milliseconds
+- sender_public_key (bytes): 32-byte Ed25519 public key
+- payload (bytes): Encrypted or plaintext payload depending on type
+- signature (bytes): 64-byte Ed25519 signature
+- optional routing_info (RoutingInfo): For multi-hop routing
+```
+
+**RoutingInfo**:
+```
+Schema defines:
+- hop_count (uint32): Current hop number
+- max_hops (uint32): Maximum allowed hops
+- route_type (enum): Direct, Bridge, OnionRouted
+- next_hop (bytes): Next node's public key hash (optional)
+- onion_layers (bytes): Encrypted routing layers (for onion routing)
+```
+
+**PrivateMessagePayload** (encrypted):
+```
+Schema defines:
+- content (bytes): Actual message content
+- return_path (bytes): Encrypted routing information for responses
+- ephemeral_public_key (bytes): For key exchange
+- nonce (bytes): Encryption nonce
+```
+
+**BroadcastPayload** (signed, not encrypted):
+```
+Schema defines:
+- content (bytes): Public message content
+- content_type (string): MIME type or custom type
+- metadata (map<string, string>): Extensible metadata
+```
+
+**UpdatePackage** (signed by authority):
+```
+Schema defines:
+- version (string): Semantic version
+- package_data (bytes): Update binary or configuration
+- changelog (string): Human-readable changes
+- checksum (bytes): SHA256 of package_data
+- required_version (string): Minimum version that can apply this
+- signatures (repeated bytes): Multiple signatures for multi-sig
+```
+
+**QueryMessage**:
+```
+Schema defines:
+- query_id (bytes): Unique query identifier
+- query_type (string): Type of query
+- query_data (bytes): Encrypted query content
+- response_required (bool): Whether response expected
+```
+
+**ResponseMessage**:
+```
+Schema defines:
+- query_id (bytes): References original query
+- response_data (bytes): Encrypted response content
+- response_code (enum): Success, NotFound, Error, etc.
+```
+
+### Serialization Flow
+
+**Sending a Message**:
+1. Create protobuf message struct in memory
+2. Populate all required fields
+3. Serialize to bytes using protobuf encoder
+4. If private: encrypt serialized bytes
+5. Sign the encrypted (or plaintext) bytes
+6. Wrap in BaseMessage with signature
+7. Serialize final BaseMessage to bytes
+8. Send over network
+
+**Receiving a Message**:
+1. Receive bytes from network
+2. Deserialize to BaseMessage using protobuf decoder
+3. Verify signature
+4. If encrypted: decrypt payload
+5. Deserialize inner payload to specific message type
+6. Process based on message_type
+7. Pass to application callback
+
+### Compatibility and Versioning
+
+**Protocol Version Field**:
+- Major version changes: incompatible protocol changes
+- Minor version changes: backward-compatible additions
+- Nodes advertise supported version range
+- Reject messages with unsupported versions
+
+**Field Evolution**:
+- Add new optional fields freely (backward compatible)
+- Never remove fields (mark deprecated instead)
+- Never change field types
+- Use reserved field numbers for removed fields
+
+---
+
+## Traffic Obfuscation: HTTPS-Like Appearance
+
+### Goal
+Make Meshara traffic indistinguishable from HTTPS web traffic to avoid detection, filtering, or throttling by network observers.
+
+### TLS Wrapping Strategy
+
+**Use Real TLS 1.3**:
+- All connections use actual TLS 1.3 protocol
+- Not a simulation - real TLS handshake and encryption
+- Meshara protocol runs inside TLS tunnel
+- To external observer: looks like HTTPS
+
+**TLS Configuration**:
+- Use standard HTTPS port (443) by default
+- Alternative: common ports (8443, other HTTPS ports)
+- Standard TLS cipher suites (AES-GCM, ChaCha20-Poly1305)
+- ALPN (Application-Layer Protocol Negotiation) for protocol identification
+
+### ALPN Protocol Identifier
+
+**Custom ALPN Protocol**:
+- Register private ALPN identifier: "meshara/1.0"
+- During TLS handshake, both sides advertise this ALPN
+- If ALPN matches: proceed with Meshara protocol
+- If ALPN doesn't match: reject connection
+- To observer: just sees TLS handshake with ALPN (normal for HTTPS/2, HTTPS/3)
+
+### HTTP/2 Mimicry (Optional Enhancement)
+
+**Embed in HTTP/2 Frames**:
+- Use HTTP/2 framing over TLS
+- Meshara messages sent as HTTP/2 DATA frames
+- Use pseudo-headers to look like HTTP requests
+- Binary data in POST request bodies (common for APIs)
+- Appears as encrypted API traffic
+
+**HTTP/2 Frame Structure**:
+```
+Connection established with TLS + HTTP/2 ALPN
+Client sends HTTP/2 HEADERS frame:
+  - :method = POST
+  - :path = /api/v1/message
+  - :scheme = https
+  - :authority = [peer address]
+  - content-type = application/octet-stream
+
+Client sends HTTP/2 DATA frame:
+  - Contains: serialized protobuf message
+  
+Server responds with HTTP/2 HEADERS + DATA
+  - Status 200 OK
+  - Content: response protobuf message
+```
+
+**To Network Observer**:
+- Sees TLS-encrypted HTTP/2 connection
+- Sees POST requests to API endpoints
+- Binary data in requests/responses (normal for modern APIs)
+- Indistinguishable from encrypted REST API traffic
+- Could be: mobile app, web service, API client
+
+### Domain Fronting Support (Optional)
+
+**For Censorship Circumvention**:
+- Connect to legitimate CDN (Cloudflare, AWS CloudFront, etc.)
+- SNI (Server Name Indication) shows popular domain
+- Inside TLS: HTTP Host header shows real meshara peer
+- CDN routes based on Host header
+- Observer sees connection to legitimate domain
+
+**Configuration**:
+- Provide list of domain fronting-compatible CDNs
+- Optional feature, disabled by default
+- Enable in regions with active censorship
+- Requires cooperating bridge nodes behind CDN
+
+### Traffic Padding
+
+**Uniform Message Sizes**:
+- Pad all messages to power-of-2 sizes: 256B, 512B, 1KB, 2KB, 4KB, etc.
+- Use protobuf's reserved bytes fields for padding
+- Makes traffic analysis harder
+- Observer can't infer message types from size
+
+**Timing Obfuscation**:
+- Add random delays before sending (configurable range)
+- Batch multiple messages when possible
+- Send dummy messages during idle periods
+- Prevents timing correlation attacks
+
+### Deep Packet Inspection (DPI) Resistance
+
+**TLS Protection**:
+- All payload encrypted with TLS
+- DPI cannot inspect content
+- Cannot determine it's Meshara vs HTTPS
+
+**Certificate Strategy**:
+- Use self-signed certificates (peers verify via public keys, not CA)
+- Or: use Let's Encrypt certificates for bridge nodes
+- Certificate subject can be generic or random
+- Alternative: use peer's public key as certificate
+
+**SNI Hiding** (Encrypted Client Hello):
+- Use TLS 1.3 Encrypted SNI extension (ESNI) or ECH
+- Hides destination from network observer
+- Requires cooperation from bridges
+
+---
+
+## Developer-Friendly API Design
+
+### High-Level API Philosophy
+
+**Goals**:
+- Hide cryptographic complexity
+- Automatic key management
+- Sensible defaults
+- Progressive disclosure (simple for basic, powerful for advanced)
+- Async/await native (Rust async)
+
+### Core API Types
+
+**Node**:
+The main entry point. Represents a Meshara node instance.
+
+**Builder Pattern for Configuration**:
+```
+Configuration builder:
+- Start with defaults
+- Override specific options
+- Build immutable Node instance
+
+Example flow:
+- Create builder
+- Set storage path
+- Set network ports
+- Add bootstrap nodes
+- Set authority keys
+- Build node
+```
+
+**Node Lifecycle Methods**:
+```
+Create node from builder
+Start networking (begin accepting connections, discover peers)
+Stop networking (graceful shutdown)
+Restart (for configuration changes)
+```
+
+### Message API
+
+**Simple Send/Receive**:
+
+**Send Private Message**:
+```
+Method: send_private_message
+Parameters:
+  - recipient: RecipientId (public key or alias)
+  - content: bytes
+  - options: optional MessageOptions
+Returns: Future<MessageId, Error>
+
+What it does:
+  - Looks up recipient's public key
+  - Encrypts content
+  - Signs message
+  - Finds route to recipient
+  - Sends via best available path
+  - Returns immediately with message ID
+  - Actual delivery happens async
+```
+
+**Send Broadcast**:
+```
+Method: broadcast_message
+Parameters:
+  - content: bytes
+  - content_type: string (MIME type or custom)
+Returns: Future<MessageId, Error>
+
+What it does:
+  - Signs message
+  - Initiates gossip propagation
+  - Returns message ID
+  - Message spreads through network automatically
+```
+
+**Receive Messages (Event-Driven)**:
+```
+Method: on_message_received
+Parameters:
+  - callback: FnMut(MessageEvent)
+  
+MessageEvent contains:
+  - message_id: unique identifier
+  - sender: PublicKey
+  - content: bytes
+  - timestamp: DateTime
+  - verified: bool (signature verification result)
+  - message_type: enum (Private, Broadcast, Update, etc.)
+```
+
+**Query/Response Pattern**:
+```
+Method: query_authority
+Parameters:
+  - authority_id: AuthorityId
+  - query: bytes
+  - timeout: Duration
+Returns: Future<Response, Error>
+
+What it does:
+  - Encrypts query for authority
+  - Finds route through bridges
+  - Sends query
+  - Waits for response (with timeout)
+  - Decrypts and verifies response
+  - Returns response or timeout error
+```
+
+### Authority Node API
+
+**For nodes that publish signed content**:
+
+**Publish Update**:
+```
+Method: publish_update
+Parameters:
+  - version: string
+  - package_data: bytes
+  - changelog: string
+Returns: Future<MessageId, Error>
+
+What it does:
+  - Creates UpdatePackage protobuf
+  - Signs with authority private key
+  - Broadcasts to all connected peers
+  - Tracks propagation (optional)
+```
+
+**Respond to Query**:
+```
+Method: respond_to_query
+Parameters:
+  - query_event: QueryEvent (from callback)
+  - response: bytes
+Returns: Future<(), Error>
+
+What it does:
+  - Encrypts response for requester
+  - Signs response
+  - Routes back via return path
+  - Handles automatically
+```
+
+### Event System
+
+**Event Types**:
+
+Define enum for all event types:
+- MessageReceived: New message arrived
+- UpdateAvailable: Authority published update
+- QueryReceived: Someone sent query to this authority
+- PeerConnected: New peer connection established
+- PeerDisconnected: Peer connection lost
+- NetworkStatus: Network health changed
+- SignatureVerified: Message authenticity confirmed
+- SignatureFailed: Potential forgery detected
+- Error: Various error conditions
+
+**Event Registration**:
+```
+Method: subscribe
+Parameters:
+  - event_type: EventType
+  - callback: async FnMut(Event)
+Returns: SubscriptionHandle
+
+Can subscribe to multiple event types
+Can have multiple subscribers per event type
+Unsubscribe with handle
+```
+
+**Event Delivery**:
+- Events delivered asynchronously
+- Non-blocking
+- Order preserved per event type
+- Concurrent callback execution (thread-safe callbacks)
+
+### Identity Management API
+
+**Automatic Identity Handling**:
+
+**First Run**:
+```
+When node created for first time:
+  - Automatically generate Ed25519 keypair
+  - Automatically generate X25519 keypair (encryption)
+  - Save encrypted to storage
+  - Optionally prompt for passphrase
+  - Return node ready to use
+```
+
+**Export/Import Identity**:
+```
+Method: export_identity
+Parameters:
+  - passphrase: string
+Returns: bytes (encrypted identity bundle)
+
+Method: import_identity  
+Parameters:
+  - identity_bundle: bytes
+  - passphrase: string
+Returns: Result<(), Error>
+
+Use case: Move identity to another device
+```
+
+**Identity Info**:
+```
+Method: get_public_key
+Returns: PublicKey (own public key)
+
+Method: get_node_id
+Returns: NodeId (hash of public key, human-readable)
+
+Method: get_fingerprint
+Returns: String (human-readable fingerprint for verification)
+```
+
+### Peer Management API
+
+**Automatic Peer Discovery**:
+```
+Method: enable_auto_discovery
+Parameters:
+  - discovery_methods: vec of DiscoveryMethod
+  
+DiscoveryMethod enum:
+  - LocalMDNS (same subnet)
+  - Bootstrap (use bootstrap nodes)
+  - DHT (distributed hash table)
+  
+What it does:
+  - Automatically finds and connects to peers
+  - Maintains target peer count
+  - Replaces failed connections
+  - Developer doesn't manage manually
+```
+
+**Manual Peer Control**:
+```
+Method: add_peer
+Parameters:
+  - address: SocketAddr
+  - public_key: optional PublicKey (for pinning)
+Returns: Future<PeerId, Error>
+
+Method: remove_peer
+Parameters:
+  - peer_id: PeerId
+Returns: Future<(), Error>
+
+Method: list_peers
+Returns: Vec<PeerInfo>
+
+PeerInfo contains:
+  - peer_id
+  - address
+  - connected_since
+  - bytes_sent/received
+  - reputation_score
+  - is_bridge
+```
+
+### Authority Management API
+
+**Trust Authority**:
+```
+Method: add_authority
+Parameters:
+  - public_key: PublicKey
+  - identifier: string (human-readable name)
+  - trust_level: TrustLevel enum
+Returns: Result<(), Error>
+
+Trust levels:
+  - UpdateAuthority (can publish updates)
+  - SigningAuthority (can sign messages)
+  - BootstrapAuthority (trusted for peer lists)
+
+Authorities can have multiple roles
+```
+
+**Verify Message Against Authority**:
+```
+Method: verify_authority_signature
+Parameters:
+  - message: Message
+  - expected_authority: AuthorityId
+Returns: Result<bool, Error>
+
+What it does:
+  - Checks signature against known authority key
+  - Returns true if valid, false if invalid
+  - Error if authority unknown
+```
+
+### Configuration API
+
+**Builder Pattern**:
+
+```
+Create NodeBuilder:
+
+Methods on builder:
+  - with_storage_path(PathBuf)
+  - with_listen_port(u16) 
+  - with_bootstrap_nodes(vec<SocketAddr>)
+  - with_authority_keys(vec<PublicKey>)
+  - with_network_profile(Profile)
+  - with_privacy_mode(PrivacyLevel)
+  - with_tls_config(TlsConfig)
+  - with_max_peers(usize)
+  - enable_feature(Feature)
+  - build() -> Result<Node, Error>
+
+Network profiles:
+  - Minimal (IoT, low resource)
+  - Standard (default, balanced)
+  - Bridge (high connectivity)
+  - Authority (publishing capability)
+
+Privacy levels:
+  - Standard (efficient, some metadata)
+  - Enhanced (onion routing when possible)
+  - Maximum (always onion, cover traffic)
+
+TLS config:
+  - Use standard port 443
+  - Custom port
+  - ALPN identifier
+  - HTTP/2 framing enable/disable
+  - Domain fronting configuration
+```
+
+**Runtime Configuration**:
+```
+Method: update_config
+Parameters:
+  - config: Config (updated configuration)
+Returns: Future<(), Error>
+
+Note: Some settings require restart
+Provides which settings changed
+Automatic graceful transition
+```
+
+### Update Handling API
+
+**Automatic Update Checking**:
+```
+Method: enable_auto_update
+Parameters:
+  - authority_id: AuthorityId
+  - check_interval: Duration
+  - auto_install: bool
+
+What it does:
+  - Periodically queries authority for latest version
+  - Compares with current version
+  - If new version available: emit event
+  - If auto_install enabled: download, verify, apply
+  - Otherwise: notify application, wait for approval
+```
+
+**Manual Update Control**:
+```
+Method: check_for_updates
+Parameters:
+  - authority_id: AuthorityId
+Returns: Future<Option<UpdateInfo>, Error>
+
+UpdateInfo:
+  - version: string
+  - size: usize
+  - changelog: string
+  - release_date: DateTime
+
+Method: apply_update
+Parameters:
+  - update_id: UpdateId
+Returns: Future<(), Error>
+
+What it does:
+  - Downloads update package
+  - Verifies signature
+  - Applies update
+  - May require application restart
+```
+
+### Error Handling
+
+**Error Type Hierarchy**:
+
+Define comprehensive error enum:
+- NetworkError (connection failures, timeouts)
+- CryptoError (signature verification, encryption failures)
+- StorageError (disk I/O, corruption)
+- ProtocolError (invalid messages, version mismatch)
+- ConfigError (invalid configuration)
+- RoutingError (cannot find route to destination)
+- AuthorityError (unknown authority, invalid signature)
+
+Each error contains:
+- Error code (machine-readable)
+- Human-readable message
+- Context (what was being attempted)
+- Optional source error (error chain)
+- Retry-ability (can retry or permanent failure)
+
+### Logging and Diagnostics
+
+**Integrated Logging**:
+```
+Method: set_log_level
+Parameters:
+  - level: LogLevel (Error, Warn, Info, Debug, Trace)
+
+Method: set_log_output
+Parameters:
+  - output: LogOutput (Stdout, File, Custom)
+
+Logs use structured format:
+  - Timestamp
+  - Level
+  - Component (networking, crypto, storage, etc.)
+  - Message
+  - Context fields (peer_id, message_id, etc.)
+```
+
+**Diagnostics API**:
+```
+Method: get_network_stats
+Returns: NetworkStats
+
+NetworkStats contains:
+  - connected_peers: usize
+  - messages_sent: u64
+  - messages_received: u64
+  - bytes_sent: u64
+  - bytes_received: u64
+  - average_latency: Duration
+  - uptime: Duration
+
+Method: run_diagnostics
+Returns: Future<DiagnosticReport, Error>
+
+DiagnosticReport contains:
+  - connectivity_ok: bool
+  - can_reach_bootstrap: bool
+  - can_reach_authority: bool
+  - nat_traversal_working: bool
+  - signature_verification_ok: bool
+  - storage_ok: bool
+  - identified_issues: vec<Issue>
+```
+
+---
+
+## Developer Examples
+
+### Example 1: Simple Secure Messaging App
+
+**Scenario**: Developer wants to add encrypted messaging to their app
+
+**Code flow**:
+```
+Initialize:
+  - Create node builder
+  - Set storage path to app data directory
+  - Add bootstrap nodes
+  - Build node
+  - Start networking
+
+Send message:
+  - Call send_private_message with recipient public key and content
+  - Await result
+  - Display confirmation to user
+
+Receive messages:
+  - Subscribe to MessageReceived event
+  - In callback: extract sender, content, display to user
+  - Verify 'verified' flag is true (signature checked)
+
+That's it - encryption, routing, verification all automatic
+```
+
+### Example 2: Software Distribution System
+
+**Scenario**: Developer distributes software updates securely
+
+**As Authority**:
+```
+Initialize:
+  - Create node builder with authority profile
+  - Load authority private key
+  - Configure as authority
+  - Build and start node
+
+Publish update:
+  - Create update package (binary + changelog)
+  - Call publish_update with version and package
+  - Update propagates automatically via gossip
+  - Track propagation with metrics
+
+Users automatically receive, verify, install
+```
+
+**As User**:
+```
+Initialize:
+  - Create standard node
+  - Add developer's public key as authority
+  - Enable auto-update with authority ID
+  - Build and start node
+
+Receive updates:
+  - Subscribe to UpdateAvailable event
+  - In callback: show changelog, prompt user
+  - If user accepts: call apply_update
+  - Library handles download, verification, install
+
+Or enable auto_install for automatic updates
+```
+
+### Example 3: Decentralized Chat Application
+
+**Scenario**: Build Signal-like group chat
+
+**Setup**:
+```
+Initialize:
+  - Create node with privacy mode enabled
+  - Enable auto-discovery for peers
+  - Start node
+
+Create group:
+  - Locally maintain list of group member public keys
+  - No centralized group management
+
+Send group message:
+  - For each member: call send_private_message
+  - All messages encrypted individually
+  - Concurrent sends (parallel)
+
+Receive messages:
+  - Subscribe to MessageReceived event
+  - If sender in group members: display
+  - Otherwise: ignore or filter
+
+Advanced:
+  - Use broadcast for public channels
+  - Group members subscribe to authority
+  - Authority broadcasts to all
+```
+
+---
+
+## Library Packaging and Distribution
+
+### Rust Crate Structure
+
+**Main Crate**:
+- Name: `meshara`
+- Published on crates.io
+- Comprehensive documentation on docs.rs
+- Examples in repository
+
+**Feature Flags**:
+```
+Default features:
+  - async-std or tokio runtime
+  - standard crypto (Ed25519, X25519, ChaCha20)
+  - protobuf serialization
+  - TLS support
+  - Local discovery (mDNS)
+
+Optional features:
+  - onion-routing (privacy mode)
+  - dht (distributed hash table)
+  - http2-framing (HTTPS mimicry)
+  - domain-fronting (censorship circumvention)
+  - metrics (prometheus-compatible)
+  - auto-update (automatic update application)
+```
+
+**Cargo.toml Setup**:
+```
+Developers add to dependencies:
+  meshara = "1.0"
+  
+Or with specific features:
+  meshara = { version = "1.0", features = ["onion-routing", "dht"] }
+```
+
+### Cross-Language Bindings
+
+**C FFI**:
+- Provide C header file
+- Expose core API functions
+- Memory management clear
+- Enables use from C, C++, Python, Ruby, etc.
+
+**Mobile Support**:
+- iOS: Swift bindings via C FFI
+- Android: JNI bindings via C FFI or direct Rust integration
+- Platform-specific networking (use OS network stack)
+- Battery optimization considerations
+
+### Documentation Structure
+
+**API Reference**:
+- Generated from doc comments
+- Every public type, method documented
+- Examples for complex operations
+- Cross-references between related items
+
+**User Guide**:
+- Getting started tutorial
+- Common use cases with full examples
+- Configuration guide
+- Security best practices
+- Troubleshooting section
+
+**Architecture Documentation**:
+- Protocol specification
+- Cryptographic design
+- Threat model
+- Performance characteristics
+
+---
+
+## Security Considerations for Developers
+
+### What Developers Must Handle
+
+**Key Storage**:
+- Library encrypts keys at rest
+- Developer must handle passphrase (if used)
+- Warn users about backup importance
+- Provide key export functionality
+
+**User Identity**:
+- Library provides public key as identity
+- Developer should allow nickname/alias
+- Developer handles UI for verification
+- Display fingerprints for out-of-band verification
+
+**Authority Trust**:
+- Developer decides which authorities to trust
+- Ship authority public keys with application
+- Or allow users to add authorities manually
+- Explain trust implications to users
+
+### What Library Handles Automatically
+
+**Cryptography**:
+- Key generation
+- Encryption/decryption
+- Signing/verification
+- Secure random number generation
+
+**Networking**:
+- Connection management
+- NAT traversal
+- Peer discovery
+- Message routing
+- TLS encryption
+
+**Protocol**:
+- Protobuf serialization
+- Message framing
+- Gossip propagation
+- Signature verification
+
+### Security Best Practices (Documentation)
+
+**Tell Developers**:
+
+1. **Always verify authority signatures**:
+   - Don't trust messages without verification
+   - Check 'verified' flag on events
+   - Display warning for unverified content
+
+2. **Protect key material**:
+   - Never log private keys
+   - Don't expose keys in UI
+   - Use secure storage APIs when available
+
+3. **User warnings**:
+   - Warn users about public broadcasts
+   - Explain that messages can't be deleted
+   - Inform about metadata (who talks to whom)
+
+4. **Update verification**:
+   - Always verify update signatures
+   - Don't bypass verification in production
+   - Test update process thoroughly
+
+5. **Peer trust**:
+   - Don't automatically trust all peers
+   - Implement user blocking/reporting
+   - Monitor reputation scores
+
+---
+
+## Testing and Development Tools
+
+### Provided Testing Utilities
+
+**Mock Network**:
+```
+Create simulated network:
+  - Spin up multiple nodes in-process
+  - Control network conditions (latency, packet loss)
+  - Deterministic for testing
+  - No real networking
+
+Example:
+  - Create 10 test nodes
+  - Connect them in specific topology
+  - Send message from node A to node J
+  - Assert message received
+  - Verify signature checked
+  - Measure propagation time
+```
+
+**Test Authority**:
+```
+Utility for creating test authorities:
+  - Generate authority keypair
+  - Sign test messages
+  - Verify test infrastructure
+
+Use in integration tests:
+  - Create test authority
+  - Nodes trust test authority
+  - Publish test updates
+  - Verify nodes receive and apply
+```
+
+**Network Simulator**:
+```
+Simulate adverse conditions:
+  - Packet loss (percentage)
+  - Network latency (milliseconds)
+  - Bandwidth limits
+  - Network partition
+  - Node churn (joins/leaves)
+
+Test resilience:
+  - Messages still delivered
+  - Network recovers
+  - No message loss
+```
+
+### Development Mode
+
+**Debug Features**:
+```
+Enable via feature flag: dev-mode
+
+Provides:
+  - Verbose logging of all operations
+  - Expose internal state for inspection
+  - Packet capture for analysis
+  - Performance profiling hooks
+  - Disable signature verification (testing only!)
+  - Deterministic key generation (reproducible tests)
+
+WARNING: Never use in production
+```
+
+---
+
+## Performance Considerations
+
+### Benchmarking
+
+**Provided Benchmarks**:
+- Message encryption/decryption throughput
+- Signature verification throughput
+- Protobuf serialization speed
+- Network round-trip time
+- Gossip propagation speed
+- Peer discovery time
+
+**Developer Tools**:
+```
+Method: benchmark_mode
+Enable to collect detailed performance metrics
+Export as CSV or JSON
+Identify bottlenecks
+```
+
+### Optimization Hints
+
+**For Developers**:
+
+1. **Batch Messages**: Send multiple messages at once when possible
+2. **Connection Pooling**: Reuse connections (library handles automatically)
+3. **Async Everything**: Use async APIs, don't block
+4. **Buffer Sizes**: Configure based on application needs
+5. **Peer Count**: More peers = more redundancy but more overhead
+
+**Library Optimizations**:
+- Zero-copy where possible
+- Connection pooling automatic
+- Message deduplication efficient (Bloom filters)
+- Parallel signature verification
+- Lazy initialization
+
+---
+
+## Migration and Compatibility
+
+### Protocol Versioning
+
+**Breaking Changes**:
+- Major version increment
+- Old nodes reject new protocol
+- Transition period: run dual-stack
+- Provide migration guide
+
+**Non-Breaking Changes**:
+- Minor version increment
+- Backward compatible
+- Old nodes ignore new fields
+- No migration required
+
+### Application Compatibility
+
+**Semantic Versioning**:
+- Library follows semver strictly
+- Breaking API changes = major version
+- New features = minor version
+- Bug fixes = patch version
+
+**Deprecation Policy**:
+- Deprecated features marked in docs
+- Deprecation warnings at compile time
+- Removed only in major version increments
+- Migration path provided
+
+---
+
+## Summary: Developer Value Proposition
+
+**What Meshara Provides**:
+
+1. **Plug-and-play decentralization**: Add to your app, get distributed communication
+2. **Security by default**: Encryption, signatures automatic, no crypto expertise needed
+3. **Censorship resistance**: Works even when centralized services blocked
+4. **Privacy protection**: Encrypted traffic, looks like HTTPS, onion routing available
+5. **Simple API**: High-level abstractions, hide complexity, just send/receive messages
+6. **Cross-platform**: Rust library works everywhere, mobile bindings available
+7. **Well-documented**: Examples, guides, API docs, architecture docs
+8. **Battle-tested**: Comprehensive tests, fuzzing, security audits
+9. **Open source**: Inspect code, verify security, contribute improvements
+10. **Production-ready**: Used in real applications, stable API, maintained
+
+**Use Cases**:
+- Secure messaging apps
+- Distributed software updates
+- Decentralized social networks
+- IoT device coordination
+- Emergency communication systems
+- Censorship-resistant news distribution
+- Community networks
+- Privacy-preserving collaboration tools
+
+**Getting Started**:
+```
+Add to Cargo.toml: meshara = "1.0"
+Create node with defaults
+Subscribe to message events
+Send encrypted messages
+That's it - you have secure, decentralized communication
+```
+
+This specification provides everything needed to implement Meshara as a production-ready, developer-friendly library with Protocol Buffers for messages and HTTPS-like traffic obfuscation.
