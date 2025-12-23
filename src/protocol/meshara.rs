@@ -53,10 +53,8 @@ pub struct BroadcastPayload {
     #[prost(string, tag = "2")]
     pub content_type: ::prost::alloc::string::String,
     #[prost(map = "string, string", tag = "3")]
-    pub metadata: ::std::collections::HashMap<
-        ::prost::alloc::string::String,
-        ::prost::alloc::string::String,
-    >,
+    pub metadata:
+        ::std::collections::HashMap<::prost::alloc::string::String, ::prost::alloc::string::String>,
 }
 /// Update package (signed by authority)
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
