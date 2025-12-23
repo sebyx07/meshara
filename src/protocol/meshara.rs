@@ -73,6 +73,8 @@ pub struct UpdatePackage {
     pub required_version: ::prost::alloc::string::String,
     #[prost(bytes = "vec", repeated, tag = "6")]
     pub signatures: ::prost::alloc::vec::Vec<::prost::alloc::vec::Vec<u8>>,
+    #[prost(bytes = "vec", repeated, tag = "7")]
+    pub authority_public_keys: ::prost::alloc::vec::Vec<::prost::alloc::vec::Vec<u8>>,
 }
 /// Query message
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -85,6 +87,8 @@ pub struct QueryMessage {
     pub query_data: ::prost::alloc::vec::Vec<u8>,
     #[prost(bool, tag = "4")]
     pub response_required: bool,
+    #[prost(uint32, tag = "5")]
+    pub timeout_ms: u32,
 }
 /// Response message
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -169,7 +173,8 @@ pub enum ResponseCode {
     Success = 0,
     NotFound = 1,
     Error = 2,
-    Unauthorized = 3,
+    Timeout = 3,
+    Unauthorized = 4,
 }
 impl ResponseCode {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -181,6 +186,7 @@ impl ResponseCode {
             Self::Success => "SUCCESS",
             Self::NotFound => "NOT_FOUND",
             Self::Error => "ERROR",
+            Self::Timeout => "TIMEOUT",
             Self::Unauthorized => "UNAUTHORIZED",
         }
     }
@@ -190,6 +196,7 @@ impl ResponseCode {
             "SUCCESS" => Some(Self::Success),
             "NOT_FOUND" => Some(Self::NotFound),
             "ERROR" => Some(Self::Error),
+            "TIMEOUT" => Some(Self::Timeout),
             "UNAUTHORIZED" => Some(Self::Unauthorized),
             _ => None,
         }

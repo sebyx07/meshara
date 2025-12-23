@@ -1,10 +1,11 @@
 //! Cryptographic benchmarks for Meshara
 
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use meshara::crypto::{
     decrypt_message, encrypt_for_recipient, hash_message, hash_public_key, sign_message,
     verify_signature, Identity,
 };
+use std::hint::black_box;
 
 fn benchmark_key_generation(c: &mut Criterion) {
     c.bench_function("key_generation", |b| {
