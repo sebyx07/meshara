@@ -12,6 +12,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - Censorship-resistant (TLS-wrapped traffic indistinguishable from HTTPS)
 - Protocol Buffers for efficient binary serialization
 - Async-first using Rust async/await
+- SOLID principles: Each module should have a single responsibility. Interfaces should be small and focused. Dependencies should point inward toward core abstractions. Code should be open for extension but closed for modification through careful use of traits and feature flags
+- Concurrency and parallelism: Design for concurrent execution from the ground up. Use async/await for IO-bound operations and parallel processing for CPU-intensive tasks like cryptographic operations. Ensure thread-safety through Rust's ownership model and carefully designed shared state
 
 **Key Technical Components**:
 - **Cryptography**: Ed25519 (signing), X25519 (encryption), ChaCha20-Poly1305, Blake3 hashing
