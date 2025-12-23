@@ -21,6 +21,11 @@ enum MessageType {
     UPDATE_PACKAGE = 2;
     QUERY = 3;
     RESPONSE = 4;
+    ROUTE_ADVERTISEMENT = 5;
+    ACKNOWLEDGMENT = 6;
+    UPDATE_ANNOUNCEMENT = 7;
+    UPDATE_REQUEST = 8;
+    UPDATE_CHUNK = 9;
 }
 
 // Routing information for multi-hop routing
@@ -88,4 +93,47 @@ enum ResponseCode {
     ERROR = 2;
     TIMEOUT = 3;
     UNAUTHORIZED = 4;
+}
+
+// Route advertisement for route discovery (Phase 4)
+message RouteAdvertisement {
+    repeated RouteEntry routes = 1;
+}
+
+// Route entry submessage
+message RouteEntry {
+    bytes node_id = 1;
+    uint32 hop_count = 2;
+    int64 last_seen = 3;
+}
+
+// Acknowledgment for reliable delivery (Phase 4)
+message Acknowledgment {
+    bytes message_id = 1;
+    bool success = 2;
+    optional string error_message = 3;
+}
+
+// Update announcement for update distribution (Phase 5)
+message UpdateAnnouncement {
+    string version = 1;
+    bytes update_id = 2;
+    uint64 size = 3;
+    bytes checksum = 4;
+    repeated bytes signatures = 5;
+}
+
+// Update request for update distribution (Phase 5)
+message UpdateRequest {
+    bytes update_id = 1;
+    uint32 chunk_index = 2;
+}
+
+// Update chunk for update distribution (Phase 5)
+message UpdateChunk {
+    bytes update_id = 1;
+    uint32 chunk_index = 2;
+    uint32 total_chunks = 3;
+    bytes data = 4;
+    bytes chunk_hash = 5;
 }

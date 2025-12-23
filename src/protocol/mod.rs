@@ -13,8 +13,9 @@ use thiserror::Error;
 
 // Re-export all Protocol Buffer types for public API
 pub use meshara::{
-    BaseMessage, BroadcastPayload, MessageType, PrivateMessagePayload, QueryMessage, ResponseCode,
-    ResponseMessage, RouteType, RoutingInfo, UpdatePackage,
+    Acknowledgment, BaseMessage, BroadcastPayload, MessageType, PrivateMessagePayload,
+    QueryMessage, ResponseCode, ResponseMessage, RouteAdvertisement, RouteEntry, RouteType,
+    RoutingInfo, UpdateAnnouncement, UpdateChunk, UpdatePackage, UpdateRequest,
 };
 
 /// Protocol-level errors
@@ -422,5 +423,124 @@ mod tests {
         assert_eq!(RouteType::Direct as i32, 0);
         assert_eq!(RouteType::Bridge as i32, 1);
         assert_eq!(RouteType::OnionRouted as i32, 2);
+    }
+
+    #[test]
+    fn test_serialize_deserialize_route_advertisement() {
+        let routes = vec![
+            RouteEntry {
+                node_id: vec![50u8; 32],
+                hop_count: 1,
+                last_seen: 1234567890,
+            },
+            RouteEntry {
+                node_id: vec![51u8; 32],
+                hop_count: 2,
+                last_seen: 1234567900,
+            },
+        ];
+
+        let msg = RouteAdvertisement { routes };
+
+        let bytes = serialize_message(&msg).unwrap();
+        let decoded: RouteAdvertisement = deserialize_message(&bytes).unwrap();
+
+        assert_eq!(decoded.routes.len(), 2);
+        assert_eq!(decoded.routes[0].hop_count, 1);
+        assert_eq!(decoded.routes[1].hop_count, 2);
+    }
+
+    #[test]
+    fn test_serialize_deserialize_acknowledgment() {
+        let msg = Acknowledgment {
+            message_id: vec![60u8; 32],
+            success: true,
+            error_message: None,
+        };
+
+        let bytes = serialize_message(&msg).unwrap();
+        let decoded: Acknowledgment = deserialize_message(&bytes).unwrap();
+
+        assert_eq!(decoded.message_id, msg.message_id);
+        assert!(decoded.success);
+        assert_eq!(decoded.error_message, None);
+
+        // Test with error message
+        let msg_with_error = Acknowledgment {
+            message_id: vec![61u8; 32],
+            success: false,
+            error_message: Some("Processing failed".to_string()),
+        };
+
+        let bytes = serialize_message(&msg_with_error).unwrap();
+        let decoded: Acknowledgment = deserialize_message(&bytes).unwrap();
+
+        assert!(!decoded.success);
+        assert_eq!(decoded.error_message, Some("Processing failed".to_string()));
+    }
+
+    #[test]
+    fn test_serialize_deserialize_update_announcement() {
+        let msg = UpdateAnnouncement {
+            version: "2.0.0".to_string(),
+            update_id: vec![70u8; 32],
+            size: 1048576, // 1 MB
+            checksum: vec![71u8; 32],
+            signatures: vec![vec![72u8; 64], vec![73u8; 64]],
+        };
+
+        let bytes = serialize_message(&msg).unwrap();
+        let decoded: UpdateAnnouncement = deserialize_message(&bytes).unwrap();
+
+        assert_eq!(decoded.version, msg.version);
+        assert_eq!(decoded.update_id, msg.update_id);
+        assert_eq!(decoded.size, 1048576);
+        assert_eq!(decoded.signatures.len(), 2);
+    }
+
+    #[test]
+    fn test_serialize_deserialize_update_request() {
+        let msg = UpdateRequest {
+            update_id: vec![80u8; 32],
+            chunk_index: 42,
+        };
+
+        let bytes = serialize_message(&msg).unwrap();
+        let decoded: UpdateRequest = deserialize_message(&bytes).unwrap();
+
+        assert_eq!(decoded.update_id, msg.update_id);
+        assert_eq!(decoded.chunk_index, 42);
+    }
+
+    #[test]
+    fn test_serialize_deserialize_update_chunk() {
+        let chunk_data = vec![90u8; 65536]; // 64 KB chunk
+
+        let msg = UpdateChunk {
+            update_id: vec![85u8; 32],
+            chunk_index: 5,
+            total_chunks: 20,
+            data: chunk_data.clone(),
+            chunk_hash: vec![86u8; 32],
+        };
+
+        let bytes = serialize_message(&msg).unwrap();
+        let decoded: UpdateChunk = deserialize_message(&bytes).unwrap();
+
+        assert_eq!(decoded.update_id, msg.update_id);
+        assert_eq!(decoded.chunk_index, 5);
+        assert_eq!(decoded.total_chunks, 20);
+        assert_eq!(decoded.data.len(), 65536);
+        assert_eq!(decoded.chunk_hash, msg.chunk_hash);
+    }
+
+    #[test]
+    fn test_all_new_message_types() {
+        // Verify all new message type enum values
+        assert_eq!(MessageType::RouteAdvertisement as i32, 5);
+        assert_eq!(MessageType::Acknowledgment as i32, 6);
+        assert_eq!(MessageType::UpdateAnnouncement as i32, 7);
+        assert_eq!(MessageType::UpdateRequest as i32, 8);
+        assert_eq!(MessageType::UpdateChunk as i32, 9);
     }
 }

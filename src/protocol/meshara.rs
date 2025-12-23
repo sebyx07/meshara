@@ -98,6 +98,68 @@ pub struct ResponseMessage {
     #[prost(enumeration = "ResponseCode", tag = "3")]
     pub response_code: i32,
 }
+/// Route advertisement for route discovery (Phase 4)
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct RouteAdvertisement {
+    #[prost(message, repeated, tag = "1")]
+    pub routes: ::prost::alloc::vec::Vec<RouteEntry>,
+}
+/// Route entry submessage
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct RouteEntry {
+    #[prost(bytes = "vec", tag = "1")]
+    pub node_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(uint32, tag = "2")]
+    pub hop_count: u32,
+    #[prost(int64, tag = "3")]
+    pub last_seen: i64,
+}
+/// Acknowledgment for reliable delivery (Phase 4)
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct Acknowledgment {
+    #[prost(bytes = "vec", tag = "1")]
+    pub message_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bool, tag = "2")]
+    pub success: bool,
+    #[prost(string, optional, tag = "3")]
+    pub error_message: ::core::option::Option<::prost::alloc::string::String>,
+}
+/// Update announcement for update distribution (Phase 5)
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct UpdateAnnouncement {
+    #[prost(string, tag = "1")]
+    pub version: ::prost::alloc::string::String,
+    #[prost(bytes = "vec", tag = "2")]
+    pub update_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(uint64, tag = "3")]
+    pub size: u64,
+    #[prost(bytes = "vec", tag = "4")]
+    pub checksum: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", repeated, tag = "5")]
+    pub signatures: ::prost::alloc::vec::Vec<::prost::alloc::vec::Vec<u8>>,
+}
+/// Update request for update distribution (Phase 5)
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct UpdateRequest {
+    #[prost(bytes = "vec", tag = "1")]
+    pub update_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(uint32, tag = "2")]
+    pub chunk_index: u32,
+}
+/// Update chunk for update distribution (Phase 5)
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct UpdateChunk {
+    #[prost(bytes = "vec", tag = "1")]
+    pub update_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(uint32, tag = "2")]
+    pub chunk_index: u32,
+    #[prost(uint32, tag = "3")]
+    pub total_chunks: u32,
+    #[prost(bytes = "vec", tag = "4")]
+    pub data: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "5")]
+    pub chunk_hash: ::prost::alloc::vec::Vec<u8>,
+}
 /// Message type enumeration
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
@@ -107,6 +169,11 @@ pub enum MessageType {
     UpdatePackage = 2,
     Query = 3,
     Response = 4,
+    RouteAdvertisement = 5,
+    Acknowledgment = 6,
+    UpdateAnnouncement = 7,
+    UpdateRequest = 8,
+    UpdateChunk = 9,
 }
 impl MessageType {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -120,6 +187,11 @@ impl MessageType {
             Self::UpdatePackage => "UPDATE_PACKAGE",
             Self::Query => "QUERY",
             Self::Response => "RESPONSE",
+            Self::RouteAdvertisement => "ROUTE_ADVERTISEMENT",
+            Self::Acknowledgment => "ACKNOWLEDGMENT",
+            Self::UpdateAnnouncement => "UPDATE_ANNOUNCEMENT",
+            Self::UpdateRequest => "UPDATE_REQUEST",
+            Self::UpdateChunk => "UPDATE_CHUNK",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -130,6 +202,11 @@ impl MessageType {
             "UPDATE_PACKAGE" => Some(Self::UpdatePackage),
             "QUERY" => Some(Self::Query),
             "RESPONSE" => Some(Self::Response),
+            "ROUTE_ADVERTISEMENT" => Some(Self::RouteAdvertisement),
+            "ACKNOWLEDGMENT" => Some(Self::Acknowledgment),
+            "UPDATE_ANNOUNCEMENT" => Some(Self::UpdateAnnouncement),
+            "UPDATE_REQUEST" => Some(Self::UpdateRequest),
+            "UPDATE_CHUNK" => Some(Self::UpdateChunk),
             _ => None,
         }
     }
