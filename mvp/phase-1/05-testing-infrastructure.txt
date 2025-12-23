@@ -1,0 +1,402 @@
+# Phase 1: Testing Infrastructure
+
+## Overview
+Set up comprehensive testing infrastructure to ensure code quality and catch
+bugs early. Phase 1 focuses on unit tests for crypto, protocol, and storage.
+
+---
+
+## Testing Philosophy
+
+- Write tests FIRST or alongside implementation (TDD-ish)
+- Test both happy path and error cases
+- Use property-based testing where applicable
+- Aim for >80% code coverage
+- Tests should be fast and deterministic
+
+---
+
+## Dependencies
+
+Required crates for testing:
+- Built-in: cargo test framework
+- proptest (property-based testing)
+- criterion (benchmarking, for later)
+- tempfile (temporary directories for storage tests)
+- hex (for hex encoding in test assertions)
+
+Add to Cargo.toml under [dev-dependencies]:
+```
+proptest = "1.0"
+tempfile = "3.0"
+hex = "0.4"
+```
+
+---
+
+## Test Organization
+
+### Unit Tests:
+
+Each module has #[cfg(test)] module at the bottom:
+
+src/crypto/keys.rs:
+```
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_generate_identity() { ... }
+
+    #[test]
+    fn test_identity_from_seed() { ... }
+}
+```
+
+### Integration Tests:
+
+tests/ directory for end-to-end tests:
+
+tests/
+├── crypto_integration.rs
+├── protocol_integration.rs
+└── storage_integration.rs
+
+These test multiple modules working together.
+
+---
+
+## Crypto Module Tests
+
+### Keys Tests (src/crypto/keys.rs):
+
+1. **test_generate_identity**:
+   - Generate identity
+   - Verify signing keypair is valid
+   - Verify encryption keypair is valid
+   - Verify public keys can be extracted
+
+2. **test_identity_from_seed**:
+   - Generate identity from fixed seed
+   - Generate again from same seed
+   - Verify both identities are identical (deterministic)
+
+3. **test_identity_different_seeds**:
+   - Generate from seed A
+   - Generate from seed B
+   - Verify identities are different
+
+4. **test_public_key_extraction**:
+   - Generate identity
+   - Extract public key
+   - Verify public key contains correct keys
+
+5. **test_fingerprint_generation**:
+   - Generate identity
+   - Get fingerprint
+   - Verify fingerprint is human-readable
+   - Verify fingerprint is deterministic
+
+### Signing Tests (src/crypto/signing.rs):
+
+1. **test_sign_and_verify**:
+   - Generate identity
+   - Sign message
+   - Verify signature with correct public key
+   - Assert verification succeeds
+
+2. **test_verify_wrong_message**:
+   - Sign message A
+   - Verify signature with message B
+   - Assert verification fails
+
+3. **test_verify_wrong_key**:
+   - Sign with identity A
+   - Verify with public key from identity B
+   - Assert verification fails
+
+4. **test_sign_empty_message**:
+   - Sign empty byte array
+   - Verify signature
+   - Assert succeeds (empty is valid)
+
+5. **test_sign_large_message**:
+   - Sign 1MB message
+   - Verify signature
+   - Assert succeeds
+
+### Encryption Tests (src/crypto/encryption.rs):
+
+1. **test_encrypt_decrypt_roundtrip**:
+   - Create sender and recipient identities
+   - Encrypt message for recipient
+   - Recipient decrypts
+   - Assert plaintext matches original
+
+2. **test_decrypt_wrong_recipient**:
+   - Encrypt for recipient A
+   - Try to decrypt with recipient B's key
+   - Assert decryption fails
+
+3. **test_decrypt_tampered_ciphertext**:
+   - Encrypt message
+   - Modify ciphertext bytes
+   - Try to decrypt
+   - Assert decryption fails (auth tag invalid)
+
+4. **test_decrypt_tampered_tag**:
+   - Encrypt message
+   - Modify auth tag
+   - Try to decrypt
+   - Assert decryption fails
+
+5. **test_encrypt_empty_message**:
+   - Encrypt empty byte array
+   - Decrypt
+   - Assert succeeds with empty result
+
+6. **test_encrypt_large_message**:
+   - Encrypt 10MB message
+   - Decrypt
+   - Assert succeeds
+
+### Hash Tests (src/crypto/hash.rs):
+
+1. **test_hash_deterministic**:
+   - Hash same input twice
+   - Assert hashes are identical
+
+2. **test_hash_different_inputs**:
+   - Hash input A
+   - Hash input B
+   - Assert hashes are different
+
+3. **test_hash_length**:
+   - Hash any input
+   - Assert hash is 32 bytes
+
+4. **test_hash_empty**:
+   - Hash empty input
+   - Assert succeeds with valid hash
+
+---
+
+## Protocol Module Tests
+
+### Serialization Tests (src/protocol/mod.rs):
+
+1. **test_base_message_roundtrip**:
+   - Create BaseMessage with all fields
+   - Serialize to bytes
+   - Deserialize back
+   - Assert all fields match
+
+2. **test_private_message_payload_roundtrip**:
+   - Create PrivateMessagePayload
+   - Serialize and deserialize
+   - Assert fields match
+
+3. **test_broadcast_payload_roundtrip**:
+   - Create BroadcastPayload
+   - Serialize and deserialize
+   - Assert fields match
+
+4. **test_update_package_roundtrip**:
+   - Create UpdatePackage
+   - Serialize and deserialize
+   - Assert fields match
+
+5. **test_deserialize_invalid_data**:
+   - Try to deserialize random bytes
+   - Assert error is returned
+
+6. **test_deserialize_truncated_message**:
+   - Serialize message
+   - Truncate bytes
+   - Try to deserialize
+   - Assert error
+
+7. **test_message_with_optional_fields**:
+   - Create message without optional fields
+   - Serialize and deserialize
+   - Assert succeeds
+
+---
+
+## Storage Module Tests
+
+### Keystore Tests (src/storage/keystore.rs):
+
+1. **test_save_and_load_identity**:
+   - Create temp directory (use tempfile crate)
+   - Generate identity
+   - Save with passphrase
+   - Load with same passphrase
+   - Assert identity matches
+
+2. **test_load_wrong_passphrase**:
+   - Save identity
+   - Try to load with wrong passphrase
+   - Assert error
+
+3. **test_load_tampered_file**:
+   - Save identity
+   - Modify file bytes
+   - Try to load
+   - Assert error
+
+4. **test_identity_file_permissions**:
+   - Save identity
+   - Check file permissions (Unix)
+   - Assert file is 0600
+
+5. **test_identity_exists**:
+   - Check non-existent file -> false
+   - Save identity
+   - Check again -> true
+
+### Config Tests (src/storage/config.rs):
+
+1. **test_save_and_load_config**:
+   - Create config
+   - Save to temp file
+   - Load back
+   - Assert fields match
+
+2. **test_load_invalid_json**:
+   - Write invalid JSON to file
+   - Try to load
+   - Assert error
+
+3. **test_default_config**:
+   - Get default config
+   - Verify sensible defaults
+
+4. **test_config_exists**:
+   - Check non-existent -> false
+   - Save config
+   - Check again -> true
+
+---
+
+## Property-Based Tests
+
+Use proptest for property-based testing.
+
+### Example: Signing Property Tests
+
+```
+proptest! {
+    #[test]
+    fn prop_sign_verify_roundtrip(message: Vec<u8>) {
+        let identity = Identity::generate();
+        let signature = sign_message(&identity, &message).unwrap();
+        let valid = verify_signature(&identity.public_key(), &message, &signature);
+        prop_assert!(valid);
+    }
+
+    #[test]
+    fn prop_different_messages_different_signatures(
+        message1: Vec<u8>,
+        message2: Vec<u8>
+    ) {
+        prop_assume!(message1 != message2);
+        let identity = Identity::generate();
+        let sig1 = sign_message(&identity, &message1).unwrap();
+        let sig2 = sign_message(&identity, &message2).unwrap();
+        prop_assert_ne!(sig1, sig2);
+    }
+}
+```
+
+---
+
+## Test Helpers
+
+Create utilities for common test patterns:
+
+### Test Fixtures (tests/common/mod.rs):
+
+```
+pub fn create_test_identity() -> Identity {
+    Identity::generate()
+}
+
+pub fn create_test_identity_from_seed(seed: u8) -> Identity {
+    let seed_bytes = [seed; 32];
+    Identity::from_seed(&seed_bytes)
+}
+
+pub fn create_test_message() -> Vec<u8> {
+    b"test message".to_vec()
+}
+
+pub fn create_temp_storage() -> TempDir {
+    TempDir::new().unwrap()
+}
+```
+
+---
+
+## Coverage
+
+### Measure Coverage:
+
+Use cargo-tarpaulin or cargo-llvm-cov:
+
+```
+cargo install cargo-tarpaulin
+cargo tarpaulin --out Html
+```
+
+Goal: >80% coverage for Phase 1.
+
+---
+
+## Continuous Integration
+
+### CI Configuration (.github/workflows/test.yml):
+
+Run on every commit:
+- cargo test
+- cargo clippy
+- cargo fmt --check
+- cargo check
+
+Run on different platforms:
+- Ubuntu (Linux)
+- macOS
+- Windows
+
+---
+
+## Test Documentation
+
+Each test should have doc comment explaining:
+- What it tests
+- Why it's important
+- Edge cases covered
+
+Example:
+```
+/// Test that signature verification fails when message is tampered with
+///
+/// This is critical for security - we must detect message tampering.
+/// Tests that even a single bit change invalidates the signature.
+#[test]
+fn test_verify_tampered_message() { ... }
+```
+
+---
+
+## Success Criteria
+
+Phase 1 testing complete when:
+- All modules have comprehensive unit tests
+- Property-based tests for crypto operations
+- Integration tests for module interactions
+- All tests pass consistently
+- >80% code coverage
+- CI runs tests automatically
+- Tests are well-documented

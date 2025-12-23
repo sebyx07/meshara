@@ -1,0 +1,259 @@
+# Phase 1: Cryptography Implementation
+
+## Overview
+Implement all cryptographic primitives using audited Rust crates. This is the
+security foundation of the entire library.
+
+---
+
+## Dependencies (Cargo.toml)
+
+Required crates:
+- ed25519-dalek (signing/verification with Ed25519)
+- x25519-dalek (key exchange for encryption)
+- chacha20poly1305 (AEAD encryption)
+- blake3 (fast cryptographic hashing)
+- rand (cryptographically secure randomness)
+- zeroize (securely clear sensitive data from memory)
+- argon2 (password-based key derivation for key storage)
+
+---
+
+## Module Structure
+
+src/crypto/
+├── mod.rs              # Public exports
+├── keys.rs             # Key generation, Identity type
+├── signing.rs          # Ed25519 sign/verify operations
+├── encryption.rs       # X25519 + ChaCha20-Poly1305 encrypt/decrypt
+└── hash.rs             # Blake3 hashing utilities
+
+---
+
+## Key Types to Define
+
+### Identity
+Represents a node's cryptographic identity
+- signing_keypair: Ed25519 keypair (for signatures)
+- encryption_keypair: X25519 keypair (for encryption)
+- public_fingerprint: String (human-readable verification)
+
+Methods:
+- generate() -> Identity (create new random identity)
+- from_seed(seed: &[u8]) -> Identity (deterministic, for testing)
+- public_key() -> PublicKey
+- export_encrypted(passphrase: &str) -> Vec<u8>
+- import_encrypted(data: &[u8], passphrase: &str) -> Result<Identity>
+
+### PublicKey
+Public portion of identity for sharing
+- signing_key: Ed25519 public key
+- encryption_key: X25519 public key
+
+Methods:
+- fingerprint() -> String (human-readable)
+- to_bytes() -> Vec<u8>
+- from_bytes(data: &[u8]) -> Result<PublicKey>
+
+---
+
+## Signing Operations (signing.rs)
+
+### API to implement:
+
+sign_message(identity: &Identity, message: &[u8]) -> Signature
+- Sign arbitrary bytes with Ed25519
+- Return 64-byte signature
+
+verify_signature(public_key: &PublicKey, message: &[u8], signature: &Signature) -> bool
+- Verify Ed25519 signature
+- Return true if valid, false otherwise
+- MUST use constant-time comparison
+
+---
+
+## Encryption Operations (encryption.rs)
+
+### API to implement:
+
+encrypt_for_recipient(
+    sender_identity: &Identity,
+    recipient_public_key: &PublicKey,
+    plaintext: &[u8]
+) -> Result<EncryptedMessage>
+
+- Perform X25519 key exchange
+- Derive shared secret
+- Generate random nonce
+- Encrypt with ChaCha20-Poly1305 AEAD
+- Return EncryptedMessage containing:
+  - ephemeral_public_key (for recipient to derive shared secret)
+  - nonce
+  - ciphertext (includes auth tag)
+
+decrypt_message(
+    recipient_identity: &Identity,
+    encrypted: &EncryptedMessage
+) -> Result<Vec<u8>>
+
+- Use recipient's private key + sender's ephemeral public key
+- Derive shared secret
+- Decrypt with ChaCha20-Poly1305
+- Verify authentication tag
+- Return plaintext or error if tag invalid
+
+---
+
+## Hashing Operations (hash.rs)
+
+### API to implement:
+
+hash_message(data: &[u8]) -> MessageId
+- Compute Blake3 hash
+- Return 32-byte hash as MessageId type
+
+hash_public_key(public_key: &PublicKey) -> NodeId
+- Compute Blake3 hash of public key
+- Return 32-byte hash as NodeId (for routing)
+
+---
+
+## Key Storage
+
+### Encrypted key export format:
+
+Structure:
+- salt (16 bytes) - random salt for Argon2
+- nonce (12 bytes) - nonce for ChaCha20-Poly1305
+- ciphertext (variable) - encrypted key material
+- auth_tag (16 bytes) - AEAD authentication tag
+
+Process:
+1. Derive key from passphrase using Argon2 (memory-hard)
+2. Encrypt identity bytes with derived key
+3. Package into export format
+4. Zeroize passphrase and derived key from memory
+
+Import process:
+1. Extract salt, nonce, ciphertext, tag
+2. Derive key from passphrase with same Argon2 params
+3. Decrypt identity
+4. Verify and deserialize
+5. Zeroize passphrase and derived key
+
+---
+
+## Security Requirements
+
+### MUST:
+- Use cryptographically secure RNG (rand::rngs::OsRng)
+- Zeroize sensitive data when dropped (use zeroize crate)
+- Use constant-time operations for secret comparisons
+- Validate all inputs (key lengths, nonce lengths, etc.)
+- Never log private keys or plaintexts
+
+### MUST NOT:
+- Implement own crypto primitives
+- Reuse nonces (generate fresh random nonce each time)
+- Trust inputs without validation
+- Leave secrets in memory after use
+- Use weak KDF parameters for key encryption
+
+---
+
+## Testing Strategy
+
+### Unit tests to write:
+
+1. **Key Generation**:
+   - Generate identity, verify keypairs are valid
+   - Generate from seed, verify deterministic
+   - Public key extraction works
+
+2. **Signing**:
+   - Sign message, verify signature succeeds
+   - Modify message, verify signature fails
+   - Wrong public key, verify signature fails
+   - Test with various message sizes
+
+3. **Encryption**:
+   - Encrypt/decrypt round-trip succeeds
+   - Modify ciphertext, decryption fails
+   - Modify auth tag, decryption fails
+   - Wrong recipient key, decryption fails
+   - Test with various plaintext sizes (0 bytes, 1 byte, large)
+
+4. **Hashing**:
+   - Same input produces same hash
+   - Different inputs produce different hashes
+   - Hash length is correct (32 bytes)
+
+5. **Key Export/Import**:
+   - Export with passphrase, import succeeds
+   - Wrong passphrase, import fails
+   - Modify exported data, import fails
+   - Round-trip preserves identity
+
+6. **Memory Safety**:
+   - Verify zeroize clears sensitive data (tricky to test)
+   - No panics on invalid inputs
+
+---
+
+## Example Usage Pattern
+
+```
+// Generate new identity
+let identity = Identity::generate();
+
+// Get public key to share
+let public_key = identity.public_key();
+
+// Sign a message
+let message = b"Hello, Meshara!";
+let signature = sign_message(&identity, message);
+
+// Verify signature (anyone can do this with public key)
+let valid = verify_signature(&public_key, message, &signature);
+assert!(valid);
+
+// Encrypt for recipient
+let encrypted = encrypt_for_recipient(&identity, &recipient_public_key, message)?;
+
+// Recipient decrypts
+let plaintext = decrypt_message(&recipient_identity, &encrypted)?;
+assert_eq!(plaintext, message);
+
+// Export identity with passphrase
+let exported = identity.export_encrypted("strong passphrase")?;
+
+// Import on another device
+let imported_identity = Identity::import_encrypted(&exported, "strong passphrase")?;
+```
+
+---
+
+## Error Types Needed
+
+CryptoError enum:
+- InvalidKeyLength
+- InvalidSignature
+- DecryptionFailed
+- InvalidPassphrase
+- InvalidEncryptedData
+- KeyDerivationFailed
+
+Each should include context about what failed.
+
+---
+
+## Success Criteria
+
+Phase 1 crypto complete when:
+- All unit tests pass
+- Can generate keys deterministically and randomly
+- Can sign and verify messages
+- Can encrypt and decrypt for recipients
+- Can export/import identities with passphrase protection
+- Memory is properly zeroized
+- No unsafe code (unless absolutely necessary and audited)

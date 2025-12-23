@@ -1,0 +1,500 @@
+# Phase 4: Message Routing Basics
+
+## Overview
+Implement intelligent message routing so messages can reach any node in the
+network, even if not directly connected.
+
+---
+
+## Goals
+
+- Route messages to any node in network
+- Find optimal paths through mesh
+- Handle multi-hop routing
+- Maintain routing tables
+- Deliver messages reliably
+
+---
+
+## Dependencies
+
+Already have from earlier phases:
+- Connection pool (peer connections)
+- Message serialization
+- Peer discovery
+
+---
+
+## Module Structure
+
+src/routing/
+├── mod.rs              # Public exports
+├── router.rs           # Main routing logic
+├── routing_table.rs    # Routing table management
+├── gossip.rs           # Broadcast propagation
+└── forwarding.rs       # Message forwarding logic
+
+---
+
+## Routing Strategies
+
+### Direct Routing:
+
+Simplest case:
+- Have direct connection to recipient
+- Send message directly
+- Most efficient (1 hop)
+
+### Multi-Hop Routing:
+
+When no direct connection:
+- Find path through intermediate nodes
+- Forward message hop-by-hop
+- Increase hop_count at each step
+- Limit max_hops to prevent loops
+
+### Broadcast (Gossip):
+
+For public messages:
+- Send to all connected peers
+- Peers forward to their peers
+- Use message deduplication
+- Eventually reaches all nodes
+
+---
+
+## Routing Table (routing_table.rs)
+
+### RoutingTable Structure:
+
+```
+pub struct RoutingTable {
+    // Direct routes: node_id -> connection
+    direct: DashMap<NodeId, Arc<Mutex<Connection>>>,
+
+    // Multi-hop routes: destination -> next_hop
+    routes: DashMap<NodeId, Route>,
+
+    // Recently seen messages (for deduplication)
+    seen_messages: BloomFilter,
+}
+
+pub struct Route {
+    pub destination: NodeId,
+    pub next_hop: NodeId,
+    pub hop_count: u32,
+    pub last_updated: Instant,
+}
+```
+
+### Routing Table Operations:
+
+```
+impl RoutingTable {
+    pub fn new() -> Self
+        - Create empty routing table
+        - Initialize bloom filter for message IDs
+
+    pub fn add_direct_route(&self, node_id: NodeId, conn: Arc<Mutex<Connection>>)
+        - Add peer with direct connection
+        - Update routing table
+
+    pub fn remove_route(&self, node_id: &NodeId)
+        - Remove routes through disconnected peer
+        - Update affected routes
+
+    pub fn find_route(&self, destination: &NodeId) -> Option<Route>
+        - Look up route to destination
+        - Return next hop if found
+
+    pub fn has_seen_message(&self, message_id: &MessageId) -> bool
+        - Check bloom filter
+        - Return true if seen before
+
+    pub fn mark_message_seen(&mut self, message_id: &MessageId)
+        - Add to bloom filter
+        - For deduplication
+}
+```
+
+---
+
+## Bloom Filter for Deduplication
+
+### Why Bloom Filter:
+
+- Space-efficient probabilistic data structure
+- Can check if message seen before
+- No false negatives (never misses duplicates)
+- Possible false positives (rare, acceptable)
+
+### Implementation:
+
+Use bloom crate (add to dependencies):
+
+```
+use bloom::{ASMS, BloomFilter};
+
+// Create filter
+// Capacity: 1 million messages
+// False positive rate: 0.01 (1%)
+let filter = BloomFilter::with_rate(0.01, 1_000_000);
+```
+
+### Aging:
+
+Periodically clear old entries:
+- Recreate bloom filter every hour
+- Prevents filter saturation
+- Allows re-delivery of old messages
+
+---
+
+## Router (router.rs)
+
+### Router Structure:
+
+```
+pub struct Router {
+    identity: Identity,
+    routing_table: Arc<RwLock<RoutingTable>>,
+    connection_pool: Arc<ConnectionPool>,
+    message_queue: mpsc::Sender<OutgoingMessage>,
+}
+
+struct OutgoingMessage {
+    destination: NodeId,
+    message: BaseMessage,
+    retry_count: u32,
+}
+```
+
+### Routing Methods:
+
+```
+impl Router {
+    pub fn new(
+        identity: Identity,
+        connection_pool: Arc<ConnectionPool>
+    ) -> Self
+
+    pub async fn route_message(
+        &self,
+        destination: &NodeId,
+        message: BaseMessage
+    ) -> Result<()>
+        - Find route to destination
+        - Send via appropriate path
+        - Handle retries if failed
+
+    pub async fn broadcast_message(&self, message: BaseMessage) -> Result<()>
+        - Send to all connected peers
+        - Mark as seen (avoid re-broadcast)
+
+    async fn send_via_next_hop(
+        &self,
+        next_hop: &NodeId,
+        message: BaseMessage
+    ) -> Result<()>
+        - Look up connection to next hop
+        - Send message
+        - Handle errors
+}
+```
+
+---
+
+## Message Forwarding (forwarding.rs)
+
+### Forwarding Logic:
+
+When receiving a message not for us:
+
+```
+pub async fn handle_received_message(
+    router: &Router,
+    message: BaseMessage,
+    source_peer: &NodeId
+) -> Result<()> {
+    // Check if message is for us
+    if message.destination == router.identity.node_id() {
+        // Deliver locally
+        router.deliver_local(message).await?;
+        return Ok(());
+    }
+
+    // Check if already seen (prevent loops)
+    if router.routing_table.has_seen_message(&message.message_id) {
+        // Duplicate, ignore
+        return Ok(());
+    }
+
+    // Mark as seen
+    router.routing_table.mark_message_seen(&message.message_id);
+
+    // Check hop limit
+    if message.routing_info.hop_count >= message.routing_info.max_hops {
+        // Max hops reached, drop
+        return Err(RoutingError::MaxHopsExceeded);
+    }
+
+    // Forward to next hop
+    router.forward_message(message).await?;
+
+    Ok(())
+}
+```
+
+### Incrementing Hop Count:
+
+When forwarding:
+
+```
+fn increment_hop_count(message: &mut BaseMessage) {
+    if let Some(ref mut routing_info) = message.routing_info {
+        routing_info.hop_count += 1;
+    } else {
+        // Initialize routing info if not present
+        message.routing_info = Some(RoutingInfo {
+            hop_count: 1,
+            max_hops: DEFAULT_MAX_HOPS, // e.g., 8
+            route_type: RouteType::Direct,
+            ..Default::default()
+        });
+    }
+}
+```
+
+---
+
+## Route Discovery
+
+### How to Learn Routes:
+
+Phase 4 approach: Simple flooding with optimization
+
+1. **Peer Announcements**:
+   - When peer connects, they announce their node_id
+   - We know: peer_id -> direct connection
+
+2. **Route Advertisements**:
+   - Periodically, peers advertise known routes
+   - Format: "I can reach node X in Y hops"
+   - We update routing table
+
+3. **Route Request/Reply** (if needed):
+   - If no route found, broadcast route request
+   - Nodes with route reply
+   - Store learned route
+
+### Route Advertisement Message:
+
+```
+message RouteAdvertisement {
+    repeated RouteEntry routes = 1;
+}
+
+message RouteEntry {
+    bytes node_id = 1;
+    uint32 hop_count = 2;
+}
+```
+
+Send periodically (every 30 seconds) to all peers.
+
+---
+
+## Gossip Protocol (gossip.rs)
+
+### Broadcast Propagation:
+
+For public broadcasts:
+
+```
+pub struct GossipProtocol {
+    router: Arc<Router>,
+    seen_broadcasts: BloomFilter,
+}
+
+impl GossipProtocol {
+    pub async fn broadcast(&self, message: BaseMessage) -> Result<()>
+        - Mark message as seen
+        - Send to all connected peers
+        - Peers will forward to their peers
+        - Eventually reaches all nodes
+
+    pub async fn handle_broadcast(&self, message: BaseMessage) -> Result<()>
+        - Check if already seen
+        - If new: deliver locally + forward to peers
+        - If seen: ignore (already processed)
+}
+```
+
+### Optimized Gossip:
+
+Reduce redundancy:
+- Don't send back to peer who sent it
+- Limit fanout (don't send to ALL peers, just subset)
+- Use epidemic broadcast tree (future optimization)
+
+---
+
+## Reliability and Retries
+
+### Message Delivery Confirmation:
+
+For private messages:
+- Recipient sends ACK when received
+- Sender retries if no ACK within timeout
+- Exponential backoff
+
+### ACK Message:
+
+```
+message Acknowledgment {
+    bytes message_id = 1;  // ID of message being acknowledged
+    bool success = 2;
+}
+```
+
+### Retry Logic:
+
+```
+async fn send_with_retry(
+    router: &Router,
+    destination: &NodeId,
+    message: BaseMessage,
+    max_retries: u32
+) -> Result<()> {
+    let mut retries = 0;
+
+    loop {
+        match router.route_message(destination, message.clone()).await {
+            Ok(_) => {
+                // Wait for ACK (with timeout)
+                if wait_for_ack(&message.message_id, TIMEOUT).await {
+                    return Ok(());
+                }
+                // No ACK, retry
+            }
+            Err(e) if retries < max_retries => {
+                // Network error, retry
+            }
+            Err(e) => {
+                // Max retries reached or unrecoverable error
+                return Err(e);
+            }
+        }
+
+        retries += 1;
+        let delay = Duration::from_secs(2u64.pow(retries)); // Exponential backoff
+        tokio::time::sleep(delay).await;
+    }
+}
+```
+
+---
+
+## Routing Metrics
+
+### Route Quality:
+
+Prefer routes based on:
+- Hop count (fewer is better)
+- Latency (measured via ping)
+- Reliability (delivery success rate)
+- Peer reputation
+
+### Route Selection:
+
+If multiple routes exist:
+- Choose route with lowest cost
+- Cost function: hops + latency + reliability_penalty
+
+---
+
+## Testing Strategy
+
+### Unit Tests:
+
+1. **Routing Table**:
+   - Add direct route
+   - Find route by destination
+   - Remove route
+
+2. **Bloom Filter**:
+   - Mark message seen
+   - Check seen returns true
+   - Different message returns false
+
+3. **Hop Count**:
+   - Increment hop count
+   - Verify max hops enforced
+
+### Integration Tests:
+
+1. **Direct Routing**:
+   - Two connected nodes
+   - Send message A -> B
+   - Verify delivered
+
+2. **Multi-Hop Routing**:
+   - Three nodes: A -- B -- C (linear)
+   - A sends to C
+   - Verify routed through B
+
+3. **Broadcast**:
+   - Five nodes in mesh
+   - One broadcasts
+   - Verify all receive exactly once
+
+4. **Deduplication**:
+   - Node receives same message twice
+   - Verify only processed once
+   - Verify not forwarded again
+
+5. **Max Hops**:
+   - Create long chain
+   - Send message with max_hops = 3
+   - Verify stopped after 3 hops
+
+6. **Route Discovery**:
+   - Mesh network of 10 nodes
+   - Any node can reach any other
+   - Verify routes learned
+
+---
+
+## Performance Considerations
+
+### Route Cache:
+
+Cache recent routes:
+- Avoid looking up same route repeatedly
+- Invalidate on network changes
+
+### Message Queue:
+
+Process messages asynchronously:
+- Queue incoming messages
+- Process in background
+- Don't block on forwarding
+
+### Parallel Forwarding:
+
+When broadcasting:
+- Send to all peers in parallel
+- Don't wait for each send to complete
+
+---
+
+## Success Criteria
+
+Phase 4 routing complete when:
+- Messages route through multi-hop paths
+- Broadcast reaches all nodes
+- Message deduplication prevents loops
+- Routing table learns routes automatically
+- Max hops limit enforced
+- Integration test: 10+ node mesh, any-to-any communication
+- Reliable delivery with retries

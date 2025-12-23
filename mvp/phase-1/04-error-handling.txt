@@ -1,0 +1,356 @@
+# Phase 1: Error Handling
+
+## Overview
+Define comprehensive error types for all subsystems. Good error handling is
+critical for debugging and user experience.
+
+---
+
+## Error Design Philosophy
+
+Errors should be:
+- **Machine-readable**: Error codes/types for programmatic handling
+- **Human-readable**: Clear messages for developers
+- **Contextual**: Include what operation failed
+- **Chainable**: Preserve underlying error causes
+- **Recoverable**: Indicate whether retry makes sense
+
+---
+
+## Dependencies
+
+Required crates:
+- thiserror (derive macro for error types)
+
+Optional:
+- anyhow (for application-level error handling in examples)
+
+---
+
+## Module Structure
+
+src/error.rs            # All error types
+
+---
+
+## Top-Level Error Type
+
+### MesharaError (main error enum):
+
+This is the public-facing error type returned by all library APIs.
+
+Variants:
+- Crypto(CryptoError)
+- Protocol(ProtocolError)
+- Storage(StorageError)
+- Network(NetworkError)
+- Routing(RoutingError)
+- Authority(AuthorityError)
+- Config(ConfigError)
+
+Each variant wraps a more specific error type.
+
+---
+
+## CryptoError
+
+Variants:
+- InvalidKeyLength { expected: usize, got: usize }
+- InvalidSignature { context: String }
+- DecryptionFailed { reason: String }
+- EncryptionFailed { reason: String }
+- InvalidPassphrase
+- InvalidEncryptedData { context: String }
+- KeyDerivationFailed { reason: String }
+- InvalidNonce { expected: usize, got: usize }
+- SigningFailed { reason: String }
+
+Each includes context about what failed.
+
+---
+
+## ProtocolError
+
+Variants:
+- SerializationFailed { message_type: String, reason: String }
+- DeserializationFailed { reason: String }
+- InvalidMessageType { got: u32 }
+- UnsupportedVersion { version: u32, supported: String }
+- InvalidFieldValue { field: String, reason: String }
+- MessageTooLarge { size: usize, max: usize }
+- MissingRequiredField { field: String }
+- InvalidSignature
+
+---
+
+## StorageError
+
+Variants:
+- FileNotFound { path: PathBuf }
+- PermissionDenied { path: PathBuf }
+- InvalidFormat { file: String, reason: String }
+- DecryptionFailed
+- CorruptedData { file: String }
+- IoError { source: std::io::Error }
+- SerializationFailed { reason: String }
+
+---
+
+## NetworkError (for later phases)
+
+Variants:
+- ConnectionFailed { address: String, reason: String }
+- ConnectionClosed { peer_id: String }
+- Timeout { operation: String }
+- TlsError { reason: String }
+- InvalidAddress { address: String }
+- PeerUnreachable { peer_id: String }
+- SendFailed { reason: String }
+- ReceiveFailed { reason: String }
+
+---
+
+## RoutingError (for later phases)
+
+Variants:
+- NoRouteToDestination { destination: String }
+- MaxHopsExceeded { hops: u32, max: u32 }
+- RoutingLoopDetected
+- InvalidRoutingInfo { reason: String }
+- PeerNotFound { peer_id: String }
+
+---
+
+## AuthorityError (for later phases)
+
+Variants:
+- UnknownAuthority { authority_id: String }
+- InvalidSignature { authority_id: String }
+- UntrustedAuthority { authority_id: String }
+- VersionMismatch { required: String, current: String }
+- UpdateVerificationFailed { reason: String }
+
+---
+
+## ConfigError
+
+Variants:
+- InvalidPort { port: u16 }
+- InvalidBootstrapNode { address: String }
+- InvalidNetworkProfile { profile: String }
+- InvalidPrivacyLevel { level: String }
+- MissingRequiredField { field: String }
+- InvalidPath { path: PathBuf }
+
+---
+
+## Error Implementation Pattern
+
+Using thiserror crate:
+
+```
+use thiserror::Error;
+
+#[derive(Error, Debug)]
+pub enum CryptoError {
+    #[error("Invalid key length: expected {expected}, got {got}")]
+    InvalidKeyLength { expected: usize, got: usize },
+
+    #[error("Signature verification failed: {context}")]
+    InvalidSignature { context: String },
+
+    #[error("Decryption failed: {reason}")]
+    DecryptionFailed { reason: String },
+
+    // ... more variants
+}
+```
+
+This automatically implements:
+- std::error::Error trait
+- Display trait (for human-readable messages)
+- Debug trait
+
+---
+
+## Error Context
+
+### Adding Context:
+
+Use context when creating errors:
+
+Instead of:
+```
+return Err(CryptoError::InvalidKeyLength)
+```
+
+Do:
+```
+return Err(CryptoError::InvalidKeyLength {
+    expected: 32,
+    got: key.len()
+})
+```
+
+This makes debugging much easier.
+
+---
+
+## Result Type Alias
+
+Define convenience type alias:
+
+```
+pub type Result<T> = std::result::Result<T, MesharaError>;
+```
+
+Allows writing:
+```
+fn do_something() -> Result<Data>
+```
+
+Instead of:
+```
+fn do_something() -> std::result::Result<Data, MesharaError>
+```
+
+---
+
+## Error Conversion
+
+Implement From traits for automatic conversion:
+
+```
+impl From<CryptoError> for MesharaError {
+    fn from(err: CryptoError) -> Self {
+        MesharaError::Crypto(err)
+    }
+}
+```
+
+This allows using `?` operator:
+```
+fn outer_function() -> Result<()> {
+    // crypto_operation returns Result<_, CryptoError>
+    // but ? automatically converts to MesharaError
+    crypto_operation()?;
+    Ok(())
+}
+```
+
+---
+
+## Retryable Errors
+
+Some errors are transient and worth retrying.
+
+Add method to MesharaError:
+
+```
+pub fn is_retryable(&self) -> bool {
+    match self {
+        MesharaError::Network(NetworkError::Timeout { .. }) => true,
+        MesharaError::Network(NetworkError::ConnectionFailed { .. }) => true,
+        MesharaError::Storage(StorageError::IoError { .. }) => true,
+        MesharaError::Crypto(_) => false, // never retry crypto errors
+        // ... more cases
+    }
+}
+```
+
+---
+
+## Error Codes
+
+For programmatic handling, add error codes:
+
+```
+pub fn error_code(&self) -> &'static str {
+    match self {
+        MesharaError::Crypto(CryptoError::InvalidSignature { .. }) => "CRYPTO_INVALID_SIG",
+        MesharaError::Network(NetworkError::Timeout { .. }) => "NET_TIMEOUT",
+        // ... more mappings
+    }
+}
+```
+
+Useful for metrics, logging, and error reporting.
+
+---
+
+## Logging Integration
+
+Errors should be logged when they occur:
+
+```
+use log::{error, warn};
+
+fn handle_error(err: &MesharaError) {
+    match err {
+        MesharaError::Crypto(e) => error!("Crypto error: {}", e),
+        MesharaError::Network(e) => warn!("Network error: {}", e),
+        // ... more cases
+    }
+}
+```
+
+---
+
+## Testing Strategy
+
+### Unit tests:
+
+1. **Error Creation**:
+   - Create each error variant
+   - Verify message is correct
+   - Verify context is preserved
+
+2. **Error Conversion**:
+   - Convert specific errors to MesharaError
+   - Verify automatic conversion with ? operator
+
+3. **Error Display**:
+   - Print errors with Display trait
+   - Verify human-readable messages
+
+4. **Error Codes**:
+   - Verify each error has unique code
+   - Verify codes are stable (don't change)
+
+---
+
+## Documentation
+
+Each error variant should have doc comment explaining:
+- When it occurs
+- What caused it
+- How to fix it (if applicable)
+- Whether it's retryable
+
+Example:
+```
+/// Signature verification failed
+///
+/// This occurs when a message's signature doesn't match the claimed sender.
+/// This could indicate:
+/// - Message was tampered with
+/// - Sender's key is incorrect
+/// - Potential security issue
+///
+/// This error is NOT retryable - the message should be rejected.
+InvalidSignature { context: String },
+```
+
+---
+
+## Success Criteria
+
+Phase 1 error handling complete when:
+- All error types defined
+- Each error has clear message
+- Errors include context
+- From traits implemented for conversions
+- Error codes assigned
+- is_retryable() implemented
+- Documentation complete
+- Tests verify error behavior

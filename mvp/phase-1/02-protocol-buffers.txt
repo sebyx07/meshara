@@ -1,0 +1,320 @@
+# Phase 1: Protocol Buffer Definitions
+
+## Overview
+Define all message types using Protocol Buffers. This creates the wire format
+for all network communication.
+
+---
+
+## Why Protocol Buffers
+
+- Binary format (smaller than JSON)
+- Strongly typed with schema
+- Forward/backward compatible
+- Efficient serialization
+- Cross-language support
+- Not human-readable (better for obfuscation)
+
+---
+
+## Dependencies
+
+Required crates:
+- prost (Protocol Buffers for Rust)
+- prost-types (well-known protobuf types like Timestamp)
+- prost-build (build script to generate Rust code from .proto)
+
+Build dependency in build.rs:
+- Compile .proto files to Rust structs at build time
+
+---
+
+## File Structure
+
+proto/
+└── messages.proto      # All message type definitions
+
+Generated code goes in:
+src/protocol/
+├── mod.rs              # Public exports
+└── messages.rs         # Generated from messages.proto (build.rs creates this)
+
+---
+
+## Protocol Buffer Schema (messages.proto)
+
+### Version and Namespace
+
+```
+syntax = "proto3";
+package meshara.protocol.v1;
+```
+
+---
+
+### BaseMessage (outer wrapper for all messages)
+
+Top-level message that wraps all communication.
+
+Fields:
+- version: uint32 (protocol version, start with 1)
+- message_id: bytes (32-byte Blake3 hash, unique identifier)
+- message_type: MessageType enum
+- timestamp: int64 (Unix timestamp in milliseconds)
+- sender_public_key: bytes (32-byte Ed25519 public key)
+- payload: bytes (encrypted or plaintext depending on type)
+- signature: bytes (64-byte Ed25519 signature of payload)
+- routing_info: RoutingInfo (optional, for multi-hop routing)
+
+MessageType enum:
+- PRIVATE_MESSAGE = 0
+- BROADCAST = 1
+- UPDATE_PACKAGE = 2
+- QUERY = 3
+- RESPONSE = 4
+
+---
+
+### RoutingInfo (for message routing)
+
+Used when messages are routed through intermediate nodes.
+
+Fields:
+- hop_count: uint32 (current hop number)
+- max_hops: uint32 (maximum allowed hops, prevent infinite loops)
+- route_type: RouteType enum
+- next_hop: bytes (optional, next node's public key hash)
+- onion_layers: bytes (optional, encrypted routing for onion routing)
+
+RouteType enum:
+- DIRECT = 0 (peer-to-peer)
+- BRIDGE = 1 (through bridge node)
+- ONION_ROUTED = 2 (multi-hop with encryption)
+
+---
+
+### PrivateMessagePayload (encrypted payload for private messages)
+
+This is what goes inside BaseMessage.payload when message_type = PRIVATE_MESSAGE.
+
+Fields:
+- content: bytes (actual message content, application-defined)
+- return_path: bytes (optional encrypted routing info for responses)
+- ephemeral_public_key: bytes (32-byte X25519 public key for key exchange)
+- nonce: bytes (12-byte nonce for ChaCha20-Poly1305)
+
+Note: This entire structure is encrypted before being put in BaseMessage.payload
+
+---
+
+### BroadcastPayload (signed but not encrypted)
+
+For public broadcasts to all nodes.
+
+Fields:
+- content: bytes (public message content)
+- content_type: string (MIME type or custom type, e.g., "text/plain", "application/json")
+- metadata: map<string, string> (extensible key-value metadata)
+
+Note: This is signed but NOT encrypted (public broadcast)
+
+---
+
+### UpdatePackage (signed by authority)
+
+For software/configuration updates from authority nodes.
+
+Fields:
+- version: string (semantic version, e.g., "1.2.3")
+- package_data: bytes (update binary, configuration, etc.)
+- changelog: string (human-readable changes)
+- checksum: bytes (32-byte SHA256 of package_data for verification)
+- required_version: string (minimum version that can apply this update)
+- signatures: repeated bytes (multiple 64-byte signatures for multi-sig)
+- authority_public_keys: repeated bytes (public keys of signers)
+
+---
+
+### QueryMessage (request to authority node)
+
+For querying authority nodes (e.g., "do you have updates?")
+
+Fields:
+- query_id: bytes (32-byte unique identifier for this query)
+- query_type: string (type of query, extensible)
+- query_data: bytes (encrypted query content)
+- response_required: bool (whether response is expected)
+- timeout_ms: uint32 (how long to wait for response)
+
+---
+
+### ResponseMessage (reply to query)
+
+Fields:
+- query_id: bytes (references original QueryMessage.query_id)
+- response_data: bytes (encrypted response content)
+- response_code: ResponseCode enum
+
+ResponseCode enum:
+- SUCCESS = 0
+- NOT_FOUND = 1
+- ERROR = 2
+- TIMEOUT = 3
+- UNAUTHORIZED = 4
+
+---
+
+## Build Script (build.rs)
+
+The build.rs file should:
+
+1. Locate all .proto files in proto/ directory
+2. Use prost_build to compile them
+3. Generate Rust structs in src/protocol/messages.rs
+4. Make generated code available to main crate
+
+Example pattern:
+- Use prost_build::Config
+- Set output directory
+- Compile proto/messages.proto
+- Generated code is included in src/protocol/mod.rs
+
+---
+
+## Serialization Helpers
+
+In src/protocol/mod.rs, provide helpers:
+
+### Serialize to bytes:
+serialize_message<T: prost::Message>(msg: &T) -> Result<Vec<u8>>
+- Use prost encode_to_vec
+- Return bytes ready for network transmission
+
+### Deserialize from bytes:
+deserialize_message<T: prost::Message + Default>(bytes: &[u8]) -> Result<T>
+- Use prost decode
+- Validate message structure
+- Return parsed message or error
+
+---
+
+## Message Flow Examples
+
+### Sending a private message:
+
+1. Create PrivateMessagePayload:
+   - Set content to actual message
+   - Set ephemeral_public_key (from encryption operation)
+   - Set nonce (from encryption operation)
+
+2. Serialize PrivateMessagePayload to bytes
+
+3. Encrypt serialized bytes -> get ciphertext
+
+4. Create BaseMessage:
+   - Set version = 1
+   - Set message_id (Blake3 hash of ciphertext)
+   - Set message_type = PRIVATE_MESSAGE
+   - Set timestamp (current time)
+   - Set sender_public_key
+   - Set payload = ciphertext
+   - Sign payload -> set signature
+
+5. Serialize BaseMessage to bytes
+
+6. Send bytes over network
+
+### Receiving a private message:
+
+1. Receive bytes from network
+
+2. Deserialize to BaseMessage
+
+3. Verify signature against sender_public_key
+   - If invalid: reject message
+
+4. Decrypt payload (ciphertext)
+   - Get plaintext bytes
+
+5. Deserialize plaintext to PrivateMessagePayload
+
+6. Extract content
+
+7. Deliver to application
+
+---
+
+## Versioning Strategy
+
+### Protocol Version Field:
+
+version field in BaseMessage tracks protocol evolution:
+- Version 1: Initial protocol
+- Future versions: Add fields as "optional" to maintain backward compatibility
+
+### Field Evolution Rules:
+
+ALLOWED:
+- Add new optional fields
+- Add new enum values
+- Add new message types
+
+NOT ALLOWED:
+- Remove fields (mark as deprecated instead)
+- Change field types
+- Change field numbers
+
+Use reserved field numbers for removed fields.
+
+---
+
+## Testing Strategy
+
+### Unit tests for protocol:
+
+1. **Serialization Round-Trip**:
+   - Create each message type
+   - Serialize to bytes
+   - Deserialize back
+   - Verify fields match original
+
+2. **Empty/Minimal Messages**:
+   - Create messages with only required fields
+   - Verify they serialize/deserialize correctly
+
+3. **Maximum Size Messages**:
+   - Create messages with large payloads
+   - Verify they serialize/deserialize correctly
+
+4. **Invalid Data**:
+   - Try deserializing garbage bytes
+   - Verify proper error handling
+   - Try deserializing truncated messages
+
+5. **Version Compatibility**:
+   - Simulate old version reading new message (with new optional fields)
+   - Verify graceful handling
+
+---
+
+## Error Types Needed
+
+ProtocolError enum:
+- SerializationFailed
+- DeserializationFailed
+- InvalidMessageType
+- UnsupportedVersion
+- InvalidFieldValue
+- MessageTooLarge
+
+---
+
+## Success Criteria
+
+Phase 1 protocol complete when:
+- All message types defined in .proto
+- Build script generates Rust code
+- Can serialize/deserialize all message types
+- Round-trip tests pass for all types
+- Error handling is robust
+- Generated code is type-safe and ergonomic

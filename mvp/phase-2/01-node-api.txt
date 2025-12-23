@@ -1,0 +1,450 @@
+# Phase 2: Node API Design
+
+## Overview
+Create the primary public API that developers will use. This phase builds on
+Phase 1 (crypto, protocol, storage) to create a usable Node abstraction.
+
+---
+
+## Goals
+
+- Developer-friendly API using builder pattern
+- Identity management (automatic key generation)
+- In-memory message passing (no network yet)
+- Event-driven message receipt
+- Type-safe, async-first design
+
+---
+
+## Module Structure
+
+src/api/
+├── mod.rs              # Public exports
+├── node.rs             # Node and NodeBuilder
+├── events.rs           # Event system
+└── config.rs           # Configuration types
+
+---
+
+## NodeBuilder Pattern
+
+### API Design:
+
+NodeBuilder provides progressive configuration:
+- Start with sensible defaults
+- Override specific options
+- Build immutable Node
+
+### Builder Methods:
+
+```
+NodeBuilder::new() -> NodeBuilder
+    Creates builder with defaults
+
+with_storage_path(path: PathBuf) -> Self
+    Set where to store identity and config
+    Default: platform-specific app data directory
+
+with_identity(identity: Identity) -> Self
+    Use existing identity instead of generating/loading
+    Useful for testing or manual identity management
+
+with_passphrase(passphrase: String) -> Self
+    Passphrase for encrypting/decrypting stored identity
+    If not provided: identity stored unencrypted (dev mode only)
+
+with_listen_port(port: u16) -> Self
+    Port for accepting connections (future phase)
+    Default: random available port
+
+with_network_profile(profile: NetworkProfile) -> Self
+    Preset configuration for different node types
+    Profiles: Minimal, Standard, Bridge, Authority
+
+with_privacy_level(level: PrivacyLevel) -> Self
+    How much privacy protection
+    Levels: Standard, Enhanced, Maximum
+
+enable_auto_discovery() -> Self
+    Enable automatic peer discovery
+    Default: enabled for Standard profile
+
+with_max_peers(count: usize) -> Self
+    Maximum number of peer connections
+    Default: 32 for Standard profile
+
+build() -> Result<Node, ConfigError>
+    Validate configuration and create Node
+```
+
+---
+
+## NetworkProfile Enum
+
+Pre-configured settings for different use cases:
+
+### Minimal:
+- For IoT devices, low resources
+- Max 8 peers
+- No auto-discovery
+- Minimal features
+
+### Standard (default):
+- Balanced configuration
+- Max 32 peers
+- Auto-discovery enabled
+- Most features enabled
+
+### Bridge:
+- High connectivity for relay nodes
+- Max 128 peers
+- Accepts incoming connections
+- Helps route traffic
+
+### Authority:
+- For nodes that publish signed content
+- Authority key loaded
+- Can sign updates
+- Accepts queries
+
+---
+
+## PrivacyLevel Enum
+
+### Standard:
+- Basic encryption and signing
+- Direct connections where possible
+- Some metadata visible (peer connections)
+
+### Enhanced:
+- Use onion routing when available
+- Prefer multi-hop paths
+- More traffic padding
+
+### Maximum:
+- Always use onion routing
+- Generate cover traffic
+- Maximum metadata protection
+- Higher latency/bandwidth cost
+
+---
+
+## Node Structure
+
+### Node Fields (internal):
+
+```
+identity: Identity
+    Node's cryptographic identity
+
+config: NodeConfig
+    Immutable configuration
+
+event_handlers: EventHandlers
+    Registered callbacks for events
+
+peers: PeerManager (future phase)
+    Manages peer connections
+
+routing: RoutingTable (future phase)
+    Message routing logic
+
+storage: StorageBackend
+    Persistent storage
+
+state: NodeState
+    Current operational state
+```
+
+### NodeState Enum:
+
+- Created (built but not started)
+- Starting (initialization in progress)
+- Running (accepting/sending messages)
+- Stopping (graceful shutdown)
+- Stopped (fully shut down)
+
+---
+
+## Node Public API
+
+### Lifecycle Methods:
+
+```
+async fn start(&mut self) -> Result<()>
+    Start the node
+    - Load or generate identity
+    - Initialize storage
+    - Start event loop (future: network)
+    - Transition to Running state
+
+async fn stop(&mut self) -> Result<()>
+    Graceful shutdown
+    - Close connections (future phase)
+    - Flush pending messages
+    - Save state
+    - Transition to Stopped
+
+fn state(&self) -> NodeState
+    Get current state
+```
+
+### Identity Methods:
+
+```
+fn public_key(&self) -> &PublicKey
+    Get node's public key for sharing
+
+fn node_id(&self) -> NodeId
+    Get node's ID (hash of public key)
+
+fn fingerprint(&self) -> String
+    Human-readable fingerprint for verification
+
+async fn export_identity(&self, passphrase: &str) -> Result<Vec<u8>>
+    Export identity for backup or transfer
+
+async fn import_identity(data: &[u8], passphrase: &str) -> Result<Identity>
+    Static method to import identity
+```
+
+### Message Sending (Phase 2: in-memory only):
+
+```
+async fn send_private_message(
+    &self,
+    recipient: &PublicKey,
+    content: &[u8]
+) -> Result<MessageId>
+    Send encrypted message to recipient
+    Phase 2: deliver via in-memory channel
+    Future: send over network
+    Returns: MessageId for tracking
+
+async fn broadcast_message(
+    &self,
+    content: &[u8],
+    content_type: &str
+) -> Result<MessageId>
+    Broadcast signed message to all peers
+    Phase 2: deliver to all in-memory nodes
+    Future: gossip protocol
+```
+
+---
+
+## Event System
+
+### Event Types:
+
+```
+pub enum Event {
+    MessageReceived {
+        message_id: MessageId,
+        sender: PublicKey,
+        content: Vec<u8>,
+        timestamp: DateTime,
+        verified: bool,
+    },
+
+    BroadcastReceived {
+        message_id: MessageId,
+        sender: PublicKey,
+        content: Vec<u8>,
+        content_type: String,
+        verified: bool,
+    },
+
+    NodeStarted,
+
+    NodeStopped,
+
+    Error {
+        error: MesharaError,
+    },
+}
+```
+
+More event types added in future phases:
+- UpdateAvailable
+- QueryReceived
+- PeerConnected
+- PeerDisconnected
+
+### Event Registration:
+
+```
+fn on_event<F>(&mut self, handler: F) -> SubscriptionHandle
+where
+    F: Fn(Event) + Send + Sync + 'static
+
+    Register callback for all events
+    Returns handle for unsubscribing
+
+fn unsubscribe(&mut self, handle: SubscriptionHandle)
+    Remove event handler
+```
+
+### Event Delivery:
+
+- Events delivered asynchronously
+- Handlers called in order registered
+- Errors in handlers logged but don't stop delivery
+- Non-blocking (handlers shouldn't block)
+
+---
+
+## In-Memory Message Passing (Phase 2)
+
+For testing and validation before networking:
+
+### NodeRegistry (testing utility):
+
+```
+pub struct NodeRegistry {
+    nodes: HashMap<NodeId, mpsc::Sender<Event>>
+}
+
+impl NodeRegistry {
+    pub fn new() -> Self
+        Create registry
+
+    pub fn register(&mut self, node: &Node) -> NodeHandle
+        Register node for message delivery
+        Returns handle for sending
+
+    pub fn route_message(&self, to: &PublicKey, event: Event) -> Result<()>
+        Deliver message to target node
+        Simulates network delivery
+}
+```
+
+This allows testing full message flow without network complexity.
+
+---
+
+## Configuration Types (config.rs)
+
+### NodeConfig Structure:
+
+```
+pub struct NodeConfig {
+    pub storage_path: PathBuf,
+    pub listen_port: u16,
+    pub network_profile: NetworkProfile,
+    pub privacy_level: PrivacyLevel,
+    pub max_peers: usize,
+    pub auto_discovery: bool,
+    pub bootstrap_nodes: Vec<SocketAddr>,
+    pub trusted_authorities: Vec<PublicKey>,
+}
+```
+
+### Validation:
+
+Config must be validated in build():
+- storage_path must be writable
+- listen_port must be valid (1-65535)
+- max_peers must be > 0
+- Bootstrap nodes must be valid addresses
+
+---
+
+## Example Usage
+
+### Simple Setup:
+
+```
+// Create node with defaults
+let mut node = NodeBuilder::new()
+    .with_storage_path("/tmp/meshara".into())
+    .build()?;
+
+// Start node
+node.start().await?;
+
+// Register event handler
+node.on_event(|event| {
+    match event {
+        Event::MessageReceived { sender, content, .. } => {
+            println!("Message from {:?}: {:?}", sender, content);
+        }
+        _ => {}
+    }
+});
+
+// Send message (in Phase 2: to other in-memory node)
+let recipient_pubkey = /* ... */;
+let msg_id = node.send_private_message(&recipient_pubkey, b"Hello!").await?;
+```
+
+### With Passphrase:
+
+```
+let mut node = NodeBuilder::new()
+    .with_storage_path("/secure/path".into())
+    .with_passphrase("strong passphrase".to_string())
+    .with_privacy_level(PrivacyLevel::Enhanced)
+    .build()?;
+
+node.start().await?;
+```
+
+---
+
+## Testing Strategy
+
+### Unit Tests:
+
+1. **NodeBuilder**:
+   - Build with defaults succeeds
+   - Build with custom config succeeds
+   - Invalid config returns error
+
+2. **Node Lifecycle**:
+   - Start transitions to Running
+   - Stop transitions to Stopped
+   - Can't start twice
+
+3. **Identity Management**:
+   - New node generates identity
+   - Identity persists across restarts
+   - Export/import preserves identity
+
+4. **Event System**:
+   - Register handler succeeds
+   - Events delivered to handlers
+   - Multiple handlers all receive event
+   - Unsubscribe stops delivery
+
+### Integration Tests:
+
+1. **Two-Node Communication**:
+   - Create 2 nodes
+   - Node A sends to Node B
+   - Node B receives via event
+   - Content matches
+
+2. **Broadcast**:
+   - Create 3 nodes
+   - Node A broadcasts
+   - Nodes B and C both receive
+
+3. **Identity Persistence**:
+   - Create node with storage
+   - Stop node
+   - Create new node with same storage
+   - Identity is same
+
+---
+
+## Success Criteria
+
+Phase 2 complete when:
+- NodeBuilder provides clean API
+- Can create and start nodes
+- Can send/receive messages in-memory
+- Event system delivers messages
+- Integration test: 2+ nodes exchange messages
+- API is intuitive and type-safe
+- Documentation complete

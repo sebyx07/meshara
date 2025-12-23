@@ -1,0 +1,550 @@
+# Phase 5: Update Distribution and Application
+
+## Overview
+Implement efficient distribution of update packages across the network and
+safe application of updates.
+
+---
+
+## Goals
+
+- Efficient update propagation via gossip
+- Resume interrupted downloads
+- Verify integrity before applying
+- Safe rollback on failure
+- Progress tracking
+
+---
+
+## Update Distribution Strategy
+
+### Gossip-Based Propagation:
+
+Instead of all nodes downloading from authority:
+- Authority publishes update once
+- Nearby nodes download and cache
+- Other nodes download from cached peers
+- Reduces load on authority
+- Faster propagation
+
+### Content Addressing:
+
+Updates identified by hash:
+- UpdateId = Blake3(package_data)
+- Request update by hash
+- Verify received data matches hash
+- Prevents tampering
+
+---
+
+## Module Enhancement
+
+src/authority/
+├── distribution.rs     # Update distribution logic
+└── application.rs      # Update application and rollback
+
+---
+
+## Update Distribution (distribution.rs)
+
+### Update Announcement:
+
+Authority broadcasts small announcement first:
+
+```
+pub struct UpdateAnnouncement {
+    pub version: String,
+    pub update_id: UpdateId,  // Hash of package
+    pub size: usize,
+    pub checksum: Vec<u8>,
+    pub signature: Signature,
+}
+```
+
+This is small (< 1KB), propagates quickly.
+
+### Update Request:
+
+Nodes that want update:
+
+```
+pub struct UpdateRequest {
+    pub update_id: UpdateId,
+    pub chunk_index: u32,  // For partial downloads
+}
+```
+
+### Update Chunks:
+
+Large updates split into chunks:
+- Chunk size: 64KB
+- Allows resuming
+- Parallel downloads from multiple peers
+
+```
+pub struct UpdateChunk {
+    pub update_id: UpdateId,
+    pub chunk_index: u32,
+    pub total_chunks: u32,
+    pub data: Vec<u8>,
+    pub chunk_hash: Vec<u8>,  // Verify individual chunk
+}
+```
+
+---
+
+## Update Downloader
+
+### Downloader State:
+
+```
+pub struct UpdateDownloader {
+    update_id: UpdateId,
+    total_size: usize,
+    total_chunks: u32,
+    received_chunks: BitVec,  // Track which chunks received
+    chunk_data: HashMap<u32, Vec<u8>>,
+    state: DownloadState,
+}
+
+pub enum DownloadState {
+    Pending,
+    Downloading { progress: f32 },
+    Verifying,
+    Complete,
+    Failed { reason: String },
+}
+```
+
+### Download Process:
+
+```
+impl UpdateDownloader {
+    pub fn new(update_id: UpdateId, total_size: usize) -> Self
+        - Initialize downloader
+        - Calculate total_chunks
+        - Set state to Pending
+
+    pub async fn download_from_peers(
+        &mut self,
+        peers: Vec<NodeId>,
+        router: &Router
+    ) -> Result<()>
+        - Request chunks from peers
+        - Download in parallel
+        - Track progress
+        - Verify chunks
+        - Assemble complete update
+
+    async fn request_chunk(
+        &mut self,
+        chunk_index: u32,
+        peer: &NodeId,
+        router: &Router
+    ) -> Result<UpdateChunk>
+        - Send UpdateRequest
+        - Receive UpdateChunk
+        - Verify chunk hash
+
+    fn mark_chunk_received(&mut self, chunk_index: u32, data: Vec<u8>)
+        - Store chunk data
+        - Update received_chunks bitmap
+        - Update progress
+
+    pub fn progress(&self) -> f32
+        - Return download progress (0.0 to 1.0)
+
+    pub async fn assemble(&self) -> Result<Vec<u8>>
+        - Combine all chunks in order
+        - Return complete package data
+}
+```
+
+---
+
+## Update Cache
+
+### Caching Downloaded Updates:
+
+```
+pub struct UpdateCache {
+    cache_dir: PathBuf,
+    max_cache_size: usize,
+}
+
+impl UpdateCache {
+    pub fn new(cache_dir: PathBuf, max_cache_size: usize) -> Self
+
+    pub async fn store_update(
+        &self,
+        update_id: &UpdateId,
+        data: &[u8]
+    ) -> Result<()>
+        - Write update to cache directory
+        - Filename: {update_id}.pkg
+        - Check cache size limit
+
+    pub async fn has_update(&self, update_id: &UpdateId) -> bool
+        - Check if update in cache
+
+    pub async fn load_update(&self, update_id: &UpdateId) -> Result<Vec<u8>>
+        - Read update from cache
+        - Verify hash matches update_id
+
+    pub async fn serve_chunk(
+        &self,
+        update_id: &UpdateId,
+        chunk_index: u32
+    ) -> Result<UpdateChunk>
+        - Load update from cache
+        - Extract requested chunk
+        - Return chunk
+
+    async fn evict_old_updates(&mut self)
+        - Remove oldest cached updates
+        - Keep cache under size limit
+}
+```
+
+### Serving Updates to Peers:
+
+```
+async fn handle_update_request(
+    cache: &UpdateCache,
+    request: UpdateRequest,
+    requester: &NodeId,
+    router: &Router
+) -> Result<()> {
+    // Check if we have this update
+    if !cache.has_update(&request.update_id).await {
+        // We don't have it, can't help
+        return Ok(());
+    }
+
+    // Serve requested chunk
+    let chunk = cache.serve_chunk(&request.update_id, request.chunk_index).await?;
+
+    // Send chunk to requester
+    router.send_to_peer(requester, chunk).await?;
+
+    Ok(())
+}
+```
+
+---
+
+## Update Application (application.rs)
+
+### Update Applicator:
+
+```
+pub struct UpdateApplicator {
+    backup_dir: PathBuf,
+    current_version: String,
+}
+
+impl UpdateApplicator {
+    pub fn new(backup_dir: PathBuf) -> Self
+
+    pub async fn apply_update(
+        &self,
+        update: UpdatePackage,
+        verified: bool
+    ) -> Result<()>
+        - Verify update is trusted (if not already)
+        - Backup current binary/config
+        - Apply update
+        - Verify installation
+        - On failure: rollback
+
+    async fn backup_current(&self) -> Result<PathBuf>
+        - Copy current binary to backup directory
+        - Return backup path
+
+    async fn apply_binary_update(&self, package_data: &[u8]) -> Result<()>
+        - Write new binary
+        - Set executable permissions
+        - Verify binary is valid
+
+    async fn verify_update(&self) -> Result<bool>
+        - Run new version with --version flag
+        - Check output is valid
+        - Return true if working
+
+    pub async fn rollback(&self, backup_path: &Path) -> Result<()>
+        - Restore from backup
+        - Revert to previous version
+}
+```
+
+### Safe Update Application:
+
+```
+pub async fn apply_update_safely(
+    applicator: &UpdateApplicator,
+    update: UpdatePackage
+) -> Result<()> {
+    // Backup current version
+    let backup = applicator.backup_current().await?;
+
+    // Apply update
+    match applicator.apply_binary_update(&update.package_data).await {
+        Ok(_) => {
+            // Verify new version works
+            if applicator.verify_update().await? {
+                // Success!
+                Ok(())
+            } else {
+                // New version broken, rollback
+                applicator.rollback(&backup).await?;
+                Err(AuthorityError::UpdateVerificationFailed {
+                    reason: "Update verification failed".to_string()
+                })
+            }
+        }
+        Err(e) => {
+            // Failed to apply, rollback
+            applicator.rollback(&backup).await?;
+            Err(e)
+        }
+    }
+}
+```
+
+---
+
+## Update Flow (Complete)
+
+### Full Update Process:
+
+1. **Authority Publishes Update**:
+   ```
+   authority.publish_update(update_package).await?
+   ```
+
+2. **Announcement Propagates**:
+   - UpdateAnnouncement gossips through network
+   - All nodes receive announcement
+
+3. **Nodes Decide to Update**:
+   - Check if newer version
+   - Check if trusted authority
+   - User approval (or auto-update)
+
+4. **Download Update**:
+   - Create UpdateDownloader
+   - Find peers with update (query DHT, ask connected peers)
+   - Download chunks from multiple peers
+   - Verify each chunk
+   - Assemble complete package
+
+5. **Verify Update**:
+   - Verify signature (again)
+   - Verify checksum
+   - Check version compatibility
+
+6. **Apply Update**:
+   - Backup current version
+   - Install new version
+   - Verify installation
+   - On failure: rollback
+
+7. **Restart (if needed)**:
+   - Some updates require restart
+   - Gracefully shutdown
+   - Restart with new version
+
+---
+
+## Progress Tracking
+
+### Update Event Types:
+
+```
+pub enum UpdateEvent {
+    AnnouncementReceived {
+        version: String,
+        size: usize,
+    },
+    DownloadStarted {
+        update_id: UpdateId,
+    },
+    DownloadProgress {
+        update_id: UpdateId,
+        progress: f32,
+    },
+    DownloadComplete {
+        update_id: UpdateId,
+    },
+    VerifyingUpdate,
+    ApplyingUpdate,
+    UpdateComplete {
+        old_version: String,
+        new_version: String,
+    },
+    UpdateFailed {
+        reason: String,
+    },
+    RolledBack {
+        version: String,
+    },
+}
+```
+
+Emit these events so application can show UI.
+
+---
+
+## Bandwidth Management
+
+### Rate Limiting:
+
+Prevent update downloads from saturating bandwidth:
+
+```
+pub struct BandwidthLimiter {
+    max_bytes_per_second: usize,
+    current_usage: AtomicUsize,
+}
+
+impl BandwidthLimiter {
+    pub async fn acquire_permit(&self, bytes: usize) -> Result<()>
+        - Wait if current usage too high
+        - Grant permit when available
+        - Track usage
+
+    async fn rate_limit_loop(&self)
+        - Every second, reset current_usage
+        - Allows smooth rate limiting
+}
+```
+
+### Prioritization:
+
+Some updates are critical (security):
+- Priority queue for update downloads
+- Critical updates bypass rate limit
+- Optional updates use spare bandwidth
+
+---
+
+## Testing Strategy
+
+### Unit Tests:
+
+1. **Update Chunking**:
+   - Split large update into chunks
+   - Assemble chunks back
+   - Verify data matches original
+
+2. **Chunk Verification**:
+   - Modify chunk data
+   - Verify hash check fails
+
+3. **Update Cache**:
+   - Store and retrieve updates
+   - Cache eviction works
+   - Serve chunks correctly
+
+4. **Backup/Rollback**:
+   - Backup current version
+   - Apply update
+   - Rollback restores original
+
+### Integration Tests:
+
+1. **End-to-End Update**:
+   - Authority publishes update
+   - Nodes receive announcement
+   - Nodes download from each other
+   - All nodes update successfully
+
+2. **Interrupted Download**:
+   - Start download
+   - Disconnect mid-download
+   - Resume download
+   - Complete successfully
+
+3. **Failed Update**:
+   - Apply broken update
+   - Verify rollback works
+   - Node still operational
+
+4. **Multi-Peer Download**:
+   - Download chunks from 3 different peers
+   - Verify all chunks received
+   - Assemble correctly
+
+---
+
+## Configuration
+
+### Update Settings:
+
+```
+pub struct UpdateConfig {
+    pub auto_check: bool,
+    pub check_interval: Duration,
+    pub auto_download: bool,
+    pub auto_apply: bool,
+    pub max_download_speed: Option<usize>,  // bytes/sec
+    pub cache_size: usize,
+    pub backup_dir: PathBuf,
+}
+
+impl Default for UpdateConfig {
+    fn default() -> Self {
+        Self {
+            auto_check: true,
+            check_interval: Duration::from_secs(3600),  // 1 hour
+            auto_download: true,
+            auto_apply: false,  // Require user approval
+            max_download_speed: None,  // Unlimited
+            cache_size: 100 * 1024 * 1024,  // 100 MB
+            backup_dir: PathBuf::from("./backups"),
+        }
+    }
+}
+```
+
+---
+
+## Security Considerations
+
+### Verify Everything:
+
+At every step:
+- Verify announcement signature
+- Verify chunk hashes
+- Verify complete package checksum
+- Verify authority is trusted
+- Verify version compatibility
+
+### Prevent Downgrade Attacks:
+
+Only allow updates to newer versions:
+- Compare version numbers
+- Reject updates to older versions
+- Unless explicitly allowed (rollback)
+
+### Sandbox Testing:
+
+Before applying:
+- Test binary in sandbox (future)
+- Check for malicious behavior
+- Only apply if safe
+
+---
+
+## Success Criteria
+
+Phase 5 update distribution complete when:
+- Updates propagate efficiently via gossip
+- Nodes download from multiple peers
+- Chunked downloads support resume
+- Cache reduces redundant downloads
+- Updates apply safely with rollback
+- Progress events inform user
+- Integration test: 10 nodes all update from single publication
+- Failed updates rollback successfully
+- Bandwidth limiting prevents saturation

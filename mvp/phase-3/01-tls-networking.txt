@@ -1,0 +1,462 @@
+# Phase 3: TLS Networking
+
+## Overview
+Implement real network connections using TLS 1.3. This phase transitions from
+in-memory message passing to actual network communication.
+
+---
+
+## Goals
+
+- Establish TLS 1.3 connections between nodes
+- Send/receive messages over network
+- Connection lifecycle management
+- Error handling and retries
+- localhost/LAN communication (internet comes later)
+
+---
+
+## Dependencies
+
+Already in Cargo.toml:
+- tokio (async runtime)
+- tokio-rustls (TLS for tokio)
+- rustls (modern TLS implementation)
+- rustls-pemfile (certificate parsing)
+- webpki-roots (root certificates)
+
+---
+
+## Module Structure
+
+src/network/
+├── mod.rs              # Public exports
+├── tls.rs              # TLS configuration and connection
+├── connection.rs       # Connection management
+├── transport.rs        # Send/receive messages
+└── discovery.rs        # Peer discovery (next file)
+
+---
+
+## TLS Configuration
+
+### Why TLS 1.3:
+
+- Strong encryption
+- Modern, secure protocol
+- Traffic looks like HTTPS
+- Hard to distinguish from web traffic
+
+### Rustls vs OpenSSL:
+
+Using rustls because:
+- Pure Rust (memory safe)
+- Modern, clean API
+- No OpenSSL vulnerabilities
+- Smaller attack surface
+
+---
+
+## Certificate Strategy
+
+### Option 1: Self-Signed Certificates (MVP)
+
+For MVP, use self-signed certificates:
+- Each node generates its own certificate
+- Certificate contains node's public key
+- Peers verify via public key, not CA
+- Simple, no external dependencies
+
+Certificate generation:
+- Use rcgen crate (add to dependencies)
+- Generate certificate with node's public key
+- Sign with node's private key
+- Use for TLS connections
+
+### Option 2: Let's Encrypt (Future)
+
+For bridge nodes with public IPs:
+- Use Let's Encrypt for real certificates
+- Looks more like legitimate HTTPS
+- Better for censorship resistance
+
+---
+
+## ALPN (Application-Layer Protocol Negotiation)
+
+### Custom ALPN Identifier:
+
+Use ALPN to identify Meshara protocol:
+- ALPN string: "meshara/1.0"
+- Both sides advertise during TLS handshake
+- If ALPN matches: Meshara protocol
+- If no match: reject connection
+
+This allows:
+- Identifying Meshara peers
+- Still looks like normal TLS to observer
+- Graceful rejection of non-Meshara clients
+
+---
+
+## TLS Configuration (tls.rs)
+
+### TlsConfig Structure:
+
+```
+pub struct TlsConfig {
+    pub certificates: Vec<Certificate>,
+    pub private_key: PrivateKey,
+    pub alpn_protocols: Vec<Vec<u8>>,
+    pub root_certs: RootCertStore,
+}
+
+impl TlsConfig {
+    pub fn from_identity(identity: &Identity) -> Result<Self>
+        - Generate self-signed certificate
+        - Use identity's keys
+        - Set ALPN to "meshara/1.0"
+        - Return TLS config
+
+    pub fn client_config(&self) -> Arc<ClientConfig>
+        - Create rustls ClientConfig
+        - Configure for outgoing connections
+        - Set ALPN
+        - Dangerous: accept any certificate (we verify via public key)
+
+    pub fn server_config(&self) -> Arc<ServerConfig>
+        - Create rustls ServerConfig
+        - Configure for incoming connections
+        - Set ALPN
+        - Use our certificate
+}
+```
+
+### Certificate Generation:
+
+Use rcgen crate to generate certificates:
+
+```
+fn generate_certificate(identity: &Identity) -> Result<(Vec<u8>, Vec<u8>)> {
+    use rcgen::{Certificate, CertificateParams, KeyPair};
+
+    // Create certificate params
+    let mut params = CertificateParams::new(vec!["meshara-node".to_string()]);
+
+    // Use identity's public key in subject
+    // Set validity period (1 year)
+    // Generate certificate
+
+    // Return (certificate_der, private_key_der)
+}
+```
+
+---
+
+## Connection Types
+
+### Outgoing Connection (Client):
+
+When connecting to another peer:
+1. Look up peer's address
+2. Create TCP connection
+3. Perform TLS handshake as client
+4. Verify ALPN matches
+5. Verify peer's public key (extract from certificate)
+6. Connection established
+
+### Incoming Connection (Server):
+
+When accepting connection from peer:
+1. Listen on configured port
+2. Accept TCP connection
+3. Perform TLS handshake as server
+4. Verify ALPN matches
+5. Extract peer's public key from certificate
+6. Connection established
+
+---
+
+## Connection Structure (connection.rs)
+
+### Connection:
+
+```
+pub struct Connection {
+    peer_id: NodeId,
+    peer_public_key: PublicKey,
+    stream: TlsStream<TcpStream>,
+    state: ConnectionState,
+    created_at: Instant,
+    bytes_sent: AtomicU64,
+    bytes_received: AtomicU64,
+}
+
+pub enum ConnectionState {
+    Connecting,
+    Connected,
+    Closing,
+    Closed,
+}
+
+impl Connection {
+    pub async fn connect(
+        address: SocketAddr,
+        tls_config: Arc<ClientConfig>
+    ) -> Result<Self>
+        - Create TCP connection
+        - Perform TLS handshake
+        - Extract peer info
+        - Return Connection
+
+    pub async fn accept(
+        tcp_stream: TcpStream,
+        tls_config: Arc<ServerConfig>
+    ) -> Result<Self>
+        - Perform TLS handshake
+        - Extract peer info
+        - Return Connection
+
+    pub async fn send_message(&mut self, message: &BaseMessage) -> Result<()>
+        - Serialize message to bytes
+        - Write to TLS stream
+        - Update bytes_sent
+
+    pub async fn receive_message(&mut self) -> Result<BaseMessage>
+        - Read from TLS stream
+        - Deserialize to BaseMessage
+        - Update bytes_received
+
+    pub async fn close(&mut self) -> Result<()>
+        - Graceful shutdown
+        - Close TLS stream
+        - Update state
+}
+```
+
+---
+
+## Message Framing
+
+### Problem:
+
+TCP is a byte stream, not message-oriented.
+Need to know where one message ends and next begins.
+
+### Solution: Length Prefix
+
+Frame format:
+```
+[4 bytes: message length (u32, big-endian)]
+[N bytes: serialized BaseMessage]
+```
+
+### Implementation:
+
+```
+async fn send_framed_message(
+    stream: &mut TlsStream<TcpStream>,
+    message: &[u8]
+) -> Result<()> {
+    // Write length prefix
+    let len = message.len() as u32;
+    stream.write_all(&len.to_be_bytes()).await?;
+
+    // Write message
+    stream.write_all(message).await?;
+    stream.flush().await?;
+
+    Ok(())
+}
+
+async fn receive_framed_message(
+    stream: &mut TlsStream<TcpStream>
+) -> Result<Vec<u8>> {
+    // Read length prefix
+    let mut len_bytes = [0u8; 4];
+    stream.read_exact(&mut len_bytes).await?;
+    let len = u32::from_be_bytes(len_bytes) as usize;
+
+    // Validate length (prevent DoS)
+    if len > MAX_MESSAGE_SIZE {
+        return Err(NetworkError::MessageTooLarge { size: len });
+    }
+
+    // Read message
+    let mut message = vec![0u8; len];
+    stream.read_exact(&mut message).await?;
+
+    Ok(message)
+}
+```
+
+Define MAX_MESSAGE_SIZE (e.g., 16 MB) to prevent memory exhaustion.
+
+---
+
+## Connection Pool (connection.rs)
+
+### ConnectionPool:
+
+Manage multiple connections:
+
+```
+pub struct ConnectionPool {
+    connections: DashMap<NodeId, Arc<Mutex<Connection>>>,
+    max_connections: usize,
+}
+
+impl ConnectionPool {
+    pub fn new(max_connections: usize) -> Self
+
+    pub async fn get_or_connect(
+        &self,
+        peer_id: &NodeId,
+        address: SocketAddr,
+        tls_config: Arc<ClientConfig>
+    ) -> Result<Arc<Mutex<Connection>>>
+        - Check if connection exists
+        - If yes: return existing
+        - If no: create new connection
+        - Store in pool
+
+    pub fn add_connection(&self, conn: Connection)
+        - Add accepted connection to pool
+
+    pub fn remove_connection(&self, peer_id: &NodeId)
+        - Remove and close connection
+
+    pub fn close_all(&self)
+        - Close all connections gracefully
+}
+```
+
+Use DashMap for concurrent access without explicit locking.
+
+---
+
+## Listener (tls.rs)
+
+### TLS Listener:
+
+Accept incoming connections:
+
+```
+pub struct TlsListener {
+    listener: TcpListener,
+    tls_config: Arc<ServerConfig>,
+}
+
+impl TlsListener {
+    pub async fn bind(
+        address: SocketAddr,
+        tls_config: Arc<ServerConfig>
+    ) -> Result<Self>
+        - Bind TCP listener
+        - Store TLS config
+        - Return listener
+
+    pub async fn accept(&mut self) -> Result<Connection>
+        - Accept TCP connection
+        - Perform TLS handshake
+        - Return Connection
+}
+```
+
+---
+
+## Error Handling
+
+### NetworkError Additions:
+
+- TlsHandshakeFailed { reason: String }
+- CertificateError { reason: String }
+- InvalidAlpn { got: String, expected: String }
+- MessageTooLarge { size: usize }
+- ConnectionReset
+- Timeout { operation: String }
+
+---
+
+## Testing Strategy
+
+### Unit Tests:
+
+1. **Certificate Generation**:
+   - Generate certificate from identity
+   - Verify certificate is valid
+   - Verify can create TLS config
+
+2. **TLS Config**:
+   - Create client config
+   - Create server config
+   - Verify ALPN is set
+
+3. **Message Framing**:
+   - Send framed message
+   - Receive framed message
+   - Verify content matches
+   - Test with various sizes (0, 1, large)
+
+### Integration Tests:
+
+1. **TLS Handshake**:
+   - Start server
+   - Connect client
+   - Verify handshake succeeds
+   - Verify ALPN matches
+
+2. **Send/Receive Message**:
+   - Establish connection
+   - Send BaseMessage
+   - Receive on other end
+   - Verify message matches
+
+3. **Multiple Connections**:
+   - Create 3 nodes
+   - Each connects to others
+   - Verify connection pool works
+   - Send messages between all pairs
+
+4. **Connection Lifecycle**:
+   - Connect
+   - Send messages
+   - Close gracefully
+   - Verify resources cleaned up
+
+5. **Error Cases**:
+   - Invalid ALPN -> reject
+   - Network error -> proper error
+   - Oversized message -> reject
+
+---
+
+## Security Considerations
+
+### Certificate Verification:
+
+- DON'T rely on CA verification (self-signed)
+- DO verify peer's public key matches expected
+- DO check ALPN protocol
+- DO validate certificate hasn't expired
+
+### Public Key Pinning:
+
+For known peers:
+- Store expected public key
+- Verify certificate contains that key
+- Reject if mismatch (prevents MITM)
+
+---
+
+## Success Criteria
+
+Phase 3 TLS complete when:
+- Can establish TLS connections
+- Can send/receive messages over network
+- Connection pool manages multiple peers
+- Certificates work with self-signed
+- ALPN protocol identification works
+- Integration test: 2+ nodes communicate over localhost
+- Error handling is robust
+- No certificate warnings in tests

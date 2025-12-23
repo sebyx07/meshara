@@ -1,0 +1,186 @@
+# Meshara MVP - Phase Overview
+
+## MVP Philosophy
+
+Build incrementally with working software at each phase. Each phase should produce
+a testable, functional subset of the library that demonstrates value.
+
+**Core Principle**: Start simple, validate early, add complexity progressively.
+
+---
+
+## Phase Breakdown
+
+### Phase 1: Foundation (Crypto + Protocol)
+**Goal**: Basic cryptographic operations and message serialization working
+**Deliverable**: Can create keys, sign/verify, encrypt/decrypt, serialize messages
+**Duration**: Smallest foundation phase
+**Dependencies**: None
+
+Key components:
+- Cryptographic primitives (Ed25519, X25519, ChaCha20-Poly1305, Blake3)
+- Protocol Buffer definitions for all message types
+- Basic message serialization/deserialization
+- Error types and handling
+- Storage abstraction (encrypted key storage)
+
+**Validation**: Unit tests for all crypto operations, protobuf round-trips
+
+---
+
+### Phase 2: Core Messaging API
+**Goal**: Simple in-memory messaging between nodes without networking
+**Deliverable**: Node API that can create messages, sign, encrypt, verify, decrypt
+**Duration**: Medium phase - builds on Phase 1
+**Dependencies**: Phase 1
+
+Key components:
+- Node and NodeBuilder API
+- Identity management (key generation, import/export)
+- Message creation API (private, broadcast)
+- Event system (callbacks for message receipt)
+- In-memory message passing (no network yet)
+
+**Validation**: Integration tests with 2+ nodes exchanging messages in-process
+
+---
+
+### Phase 3: Networking Foundation
+**Goal**: Real network connections between nodes on localhost/LAN
+**Deliverable**: Nodes can connect over TLS and exchange messages
+**Duration**: Medium-large phase - networking is complex
+**Dependencies**: Phase 2
+
+Key components:
+- TLS 1.3 connection management
+- Basic peer connection (manual address)
+- Message send/receive over network
+- Connection lifecycle management
+- Simple peer discovery (mDNS for local network)
+- Basic error handling and retries
+
+**Validation**: Integration tests with nodes on different processes/machines
+
+---
+
+### Phase 4: Routing and Discovery
+**Goal**: Automatic peer discovery and multi-hop message routing
+**Deliverable**: Messages automatically routed through mesh network
+**Duration**: Large phase - routing is complex
+**Dependencies**: Phase 3
+
+Key components:
+- Gossip protocol for broadcasts
+- Routing table management
+- Peer discovery enhancements (bootstrap nodes)
+- Message deduplication (Bloom filters)
+- Peer reputation and scoring
+- NAT traversal basics
+
+**Validation**: Tests with 5+ nodes, messages route through intermediaries
+
+---
+
+### Phase 5: Authority and Updates
+**Goal**: Signed update distribution and authority nodes
+**Deliverable**: Authority nodes can publish signed updates, clients verify and apply
+**Duration**: Medium phase
+**Dependencies**: Phase 4 (needs routing)
+
+Key components:
+- Authority key management
+- Update package creation and signing
+- Query/Response message types
+- Update verification and application
+- Multi-signature support
+- Authority trust management API
+
+**Validation**: Authority publishes update, all network nodes receive and verify
+
+---
+
+### Phase 6: Privacy Features (Optional for MVP)
+**Goal**: Enhanced privacy through onion routing and traffic obfuscation
+**Deliverable**: Traffic looks like HTTPS, optional onion routing
+**Duration**: Large phase - privacy is complex
+**Dependencies**: Phase 4
+
+Key components:
+- HTTP/2 framing over TLS
+- Traffic padding
+- Onion routing implementation
+- Domain fronting support
+- Cover traffic generation
+
+**Validation**: Deep packet inspection cannot distinguish from HTTPS
+
+---
+
+## MVP Scope Decision
+
+**Minimum Viable Product includes**: Phases 1-5
+
+**Phase 6 (Privacy) is optional** - can be added post-MVP as it's feature-flagged
+
+---
+
+## Development Approach per Phase
+
+Each phase follows this pattern:
+
+1. **Design**: Define API surface, data structures, protocol changes
+2. **Implement**: Write code iteratively, test as you go
+3. **Test**: Comprehensive unit and integration tests
+4. **Document**: API docs, examples, architecture notes
+5. **Validate**: Ensure phase deliverable is met
+6. **Iterate**: Refine based on testing feedback
+
+---
+
+## Success Criteria
+
+**Phase 1 Success**:
+- All crypto tests pass
+- Can serialize/deserialize all message types
+- Keys stored encrypted
+
+**Phase 2 Success**:
+- Two nodes can exchange encrypted messages in-memory
+- API is intuitive and type-safe
+- Event callbacks work correctly
+
+**Phase 3 Success**:
+- Nodes connect over real network via TLS
+- Messages delivered reliably
+- Connections recover from failures
+
+**Phase 4 Success**:
+- Mesh network of 10+ nodes self-organizes
+- Messages route to any node automatically
+- Network is resilient to node failures
+
+**Phase 5 Success**:
+- Authority publishes update
+- All nodes receive, verify signature, apply update
+- Invalid signatures rejected
+
+---
+
+## Risk Mitigation
+
+**Crypto Risk**: Use battle-tested crates only, never roll own crypto
+**Network Risk**: Start simple (localhost), then LAN, then internet
+**Complexity Risk**: Each phase is independently useful, can pause anywhere
+**API Risk**: Test API ergonomics early with example code
+
+---
+
+## Post-MVP Roadmap
+
+After Phase 5 completion:
+- DHT-based peer discovery
+- Advanced onion routing
+- Mobile platform bindings
+- Performance optimization
+- Security audit
+- Production hardening

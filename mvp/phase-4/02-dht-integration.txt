@@ -1,0 +1,437 @@
+# Phase 4: DHT Integration (Optional Enhancement)
+
+## Overview
+Distributed Hash Table for decentralized peer discovery across the internet.
+This enhances Phase 4 routing with global peer discovery.
+
+**Note**: This is OPTIONAL for MVP. Can be added post-launch as feature flag.
+
+---
+
+## Goals
+
+- Discover peers globally (not just local network)
+- Decentralized peer database
+- No central server required
+- Scalable to large networks
+
+---
+
+## DHT Algorithm: Kademlia
+
+### Why Kademlia:
+
+- Used by BitTorrent, IPFS, Ethereum
+- Proven scalability
+- O(log N) lookups
+- Self-healing
+- Well-understood
+
+### Key Concepts:
+
+- 160-bit node IDs (from public key hash)
+- XOR distance metric
+- K-buckets for routing
+- Iterative lookup
+- Store/retrieve key-value pairs
+
+---
+
+## Use Cases in Meshara
+
+### 1. Peer Discovery:
+
+Store: node_id -> (IP address, port, public_key)
+- Nodes advertise their contact info
+- Other nodes look up by node_id
+- Find how to connect to any node
+
+### 2. Authority Discovery:
+
+Store: authority_id -> contact_info
+- Find authority nodes for queries
+- Discover update sources
+
+### 3. Content Discovery (future):
+
+Store: content_hash -> node_list
+- Find which nodes have specific content
+- Useful for file sharing, updates
+
+---
+
+## Dependencies
+
+DHT Implementation options:
+
+### Option 1: Use existing crate
+
+- libp2p-kad (Kademlia from libp2p)
+- Mature, well-tested
+- Heavy dependency (brings full libp2p)
+
+### Option 2: Lightweight DHT
+
+- kademlia-dht (standalone)
+- Lighter weight
+- May need more integration work
+
+### Option 3: Custom implementation
+
+- Full control
+- Significant development effort
+- Risk of bugs
+
+**Recommendation**: Use libp2p-kad with minimal libp2p setup
+
+---
+
+## Module Structure
+
+src/routing/
+└── dht.rs              # DHT integration (feature-gated)
+
+Only compiled when "dht" feature enabled.
+
+---
+
+## DHT Integration (dht.rs)
+
+### DhtNode Structure:
+
+```
+#[cfg(feature = "dht")]
+pub struct DhtNode {
+    local_peer_id: PeerId,
+    swarm: Swarm<Behaviour>,
+    command_rx: mpsc::Receiver<DhtCommand>,
+}
+
+enum DhtCommand {
+    Put { key: Vec<u8>, value: Vec<u8> },
+    Get { key: Vec<u8>, reply: oneshot::Sender<Option<Vec<u8>>> },
+    Bootstrap,
+}
+```
+
+### DHT Operations:
+
+```
+impl DhtNode {
+    pub async fn new(
+        identity: &Identity,
+        bootstrap_peers: Vec<Multiaddr>
+    ) -> Result<Self>
+        - Create libp2p peer ID from identity
+        - Initialize Kademlia DHT
+        - Configure bootstrap nodes
+        - Start swarm
+
+    pub async fn put(&mut self, key: &[u8], value: &[u8]) -> Result<()>
+        - Store key-value in DHT
+        - Replicated across multiple nodes
+
+    pub async fn get(&mut self, key: &[u8]) -> Result<Option<Vec<u8>>>
+        - Look up key in DHT
+        - Return value if found
+
+    pub async fn bootstrap(&mut self) -> Result<()>
+        - Connect to bootstrap nodes
+        - Populate routing table
+        - Join DHT network
+
+    async fn run_event_loop(&mut self)
+        - Process libp2p events
+        - Handle DHT commands
+        - Maintain DHT state
+}
+```
+
+---
+
+## Peer Advertisement
+
+### Store Contact Info:
+
+```
+pub async fn advertise_self(
+    dht: &mut DhtNode,
+    node_id: &NodeId,
+    address: SocketAddr,
+    public_key: &PublicKey
+) -> Result<()> {
+    // Serialize contact info
+    let contact_info = ContactInfo {
+        address,
+        public_key: public_key.clone(),
+        advertised_at: current_timestamp_ms(),
+    };
+
+    let value = serialize(&contact_info)?;
+
+    // Store in DHT with node_id as key
+    dht.put(node_id.as_bytes(), &value).await?;
+
+    Ok(())
+}
+```
+
+### Look Up Peer:
+
+```
+pub async fn find_peer(
+    dht: &mut DhtNode,
+    node_id: &NodeId
+) -> Result<Option<ContactInfo>> {
+    // Look up in DHT
+    let value = dht.get(node_id.as_bytes()).await?;
+
+    if let Some(bytes) = value {
+        // Deserialize contact info
+        let contact_info = deserialize(&bytes)?;
+        Ok(Some(contact_info))
+    } else {
+        Ok(None)
+    }
+}
+
+pub struct ContactInfo {
+    pub address: SocketAddr,
+    pub public_key: PublicKey,
+    pub advertised_at: i64,
+}
+```
+
+---
+
+## Integration with Router
+
+### Enhanced Routing:
+
+When route not found locally:
+
+```
+async fn route_with_dht(
+    router: &Router,
+    destination: &NodeId,
+    message: BaseMessage
+) -> Result<()> {
+    // Try local routing first
+    if let Some(route) = router.routing_table.find_route(destination) {
+        return router.send_via_next_hop(&route.next_hop, message).await;
+    }
+
+    // No local route, query DHT
+    #[cfg(feature = "dht")]
+    if let Some(dht) = &router.dht {
+        if let Some(contact_info) = find_peer(dht, destination).await? {
+            // Connect to peer directly
+            let conn = router.connection_pool.get_or_connect(
+                destination,
+                contact_info.address,
+                router.tls_config.clone()
+            ).await?;
+
+            // Send message
+            conn.lock().await.send_message(&message).await?;
+
+            return Ok(());
+        }
+    }
+
+    // Still no route
+    Err(RoutingError::NoRouteToDestination {
+        destination: destination.clone()
+    })
+}
+```
+
+---
+
+## DHT Maintenance
+
+### Periodic Re-Advertisement:
+
+Contact info should be refreshed periodically (DHT entries expire).
+
+```
+async fn dht_maintenance_loop(dht: Arc<Mutex<DhtNode>>, identity: Identity) {
+    let interval = Duration::from_secs(3600); // 1 hour
+
+    loop {
+        tokio::time::sleep(interval).await;
+
+        // Re-advertise contact info
+        let mut dht = dht.lock().await;
+        let _ = advertise_self(&mut dht, &identity.node_id(), address, &identity.public_key()).await;
+    }
+}
+```
+
+### Bootstrap Refresh:
+
+Periodically bootstrap to discover new peers:
+
+```
+async fn bootstrap_loop(dht: Arc<Mutex<DhtNode>>) {
+    let interval = Duration::from_secs(300); // 5 minutes
+
+    loop {
+        tokio::time::sleep(interval).await;
+
+        let mut dht = dht.lock().await;
+        let _ = dht.bootstrap().await;
+    }
+}
+```
+
+---
+
+## Security Considerations
+
+### Prevent DHT Pollution:
+
+Malicious nodes could spam DHT with fake entries.
+
+Mitigations:
+- Require proof-of-work for DHT insertions (future)
+- Rate-limit DHT operations per node
+- Verify contact info by attempting connection
+- Use DHT only as hint, verify via TLS + public key
+
+### Privacy Concerns:
+
+DHT reveals:
+- Your node ID
+- Your IP address
+- When you're online
+
+For privacy:
+- Use DHT only when necessary
+- Connect through bridge nodes instead
+- Use onion routing (Phase 6) to hide IP
+
+---
+
+## Feature Flag Configuration
+
+### Cargo.toml:
+
+```
+[features]
+dht = ["libp2p-kad", "libp2p"]
+```
+
+### Conditional Compilation:
+
+```
+#[cfg(feature = "dht")]
+use crate::routing::dht::DhtNode;
+
+#[cfg(feature = "dht")]
+pub dht: Option<Arc<Mutex<DhtNode>>>,
+```
+
+---
+
+## Bootstrap DHT Nodes
+
+### Initial Bootstrap:
+
+Need some bootstrap nodes to join DHT:
+- Run persistent DHT nodes on stable IPs
+- Hardcode a few in library
+- Allow users to add custom bootstraps
+
+### Meshara Bootstrap DHT Nodes:
+
+For production:
+- Run 5-10 bootstrap nodes in different regions
+- Publish addresses
+- Community can run more
+
+---
+
+## Testing Strategy
+
+### Unit Tests:
+
+1. **DHT Put/Get**:
+   - Store value
+   - Retrieve value
+   - Verify match
+
+2. **Contact Info Serialization**:
+   - Serialize ContactInfo
+   - Deserialize
+   - Verify fields match
+
+### Integration Tests (requires network):
+
+1. **DHT Peer Discovery**:
+   - Start 2 DHT nodes
+   - Node A advertises
+   - Node B looks up A
+   - Verify finds correct address
+
+2. **DHT Bootstrap**:
+   - Start bootstrap node
+   - Start regular node
+   - Bootstrap
+   - Verify DHT routing table populated
+
+---
+
+## Comparison with mDNS
+
+| Feature | mDNS | DHT |
+|---------|------|-----|
+| Scope | Local network only | Global (internet) |
+| Setup | Zero config | Needs bootstrap nodes |
+| Privacy | High (local only) | Lower (public record) |
+| Scalability | Limited | Unlimited |
+| Use case | Home/office networks | Wide-area networks |
+
+**Both can be enabled simultaneously**:
+- mDNS for local peers (fast, private)
+- DHT for global discovery (slow, public)
+
+---
+
+## Alternative: Centralized Directory (Not DHT)
+
+For simpler MVP:
+
+### Option: Use a tracker server
+
+Like BitTorrent trackers:
+- Central server maintains peer list
+- Nodes report to tracker
+- Tracker provides peer list
+
+Advantages:
+- Simpler to implement
+- Faster lookups
+- Easier to debug
+
+Disadvantages:
+- Single point of failure
+- Not decentralized
+- Privacy concerns
+- Can be blocked
+
+**DHT is better for censorship resistance.**
+
+---
+
+## Success Criteria
+
+DHT integration complete when (if implemented):
+- Can advertise node to DHT
+- Can look up peers in DHT
+- DHT integrates with routing
+- Nodes across internet can discover each other
+- Bootstrap process works
+- Periodic re-advertisement maintains presence
+- Feature flag allows disabling DHT
+- Tests pass (may need test DHT network)

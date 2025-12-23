@@ -1,0 +1,266 @@
+# Phase 1: Storage Layer
+
+## Overview
+Implement encrypted key storage and basic persistence for node configuration.
+This phase focuses on securely storing cryptographic identities.
+
+---
+
+## Dependencies
+
+Required crates:
+- serde (serialization framework)
+- serde_json (JSON serialization, for config files)
+- directories (platform-specific directories)
+
+Already have from crypto:
+- argon2 (password-based key derivation)
+- chacha20poly1305 (encryption)
+- zeroize (secure memory clearing)
+
+---
+
+## Module Structure
+
+src/storage/
+├── mod.rs              # Public exports
+├── keystore.rs         # Encrypted identity storage
+└── config.rs           # Configuration persistence
+
+---
+
+## Storage Locations
+
+### Platform-specific storage:
+
+Use directories crate to get standard paths:
+- Linux: ~/.local/share/meshara/
+- macOS: ~/Library/Application Support/meshara/
+- Windows: %APPDATA%\meshara\
+
+Or allow user to specify custom path.
+
+### File structure:
+
+meshara_data/
+├── identity.enc        # Encrypted identity (signing + encryption keys)
+├── config.json         # Node configuration (public, not encrypted)
+└── peers.json          # Known peer information (future phase)
+
+---
+
+## Identity Storage (keystore.rs)
+
+### Encrypted Identity File Format:
+
+Structure of identity.enc:
+- magic_bytes: [u8; 8] = b"MESHARA1" (file type identifier)
+- version: u32 = 1 (storage format version)
+- salt: [u8; 16] (random salt for Argon2)
+- nonce: [u8; 12] (nonce for ChaCha20-Poly1305)
+- ciphertext: Vec<u8> (encrypted identity data)
+- auth_tag: [u8; 16] (AEAD authentication tag)
+
+Total: 8 + 4 + 16 + 12 + variable + 16 bytes
+
+### Identity Serialization:
+
+Before encryption, identity is serialized as:
+- signing_private_key: [u8; 32]
+- signing_public_key: [u8; 32]
+- encryption_private_key: [u8; 32]
+- encryption_public_key: [u8; 32]
+
+Total: 128 bytes of key material
+
+### Keystore API:
+
+save_identity(path: &Path, identity: &Identity, passphrase: &str) -> Result<()>
+- Derive key from passphrase using Argon2
+- Serialize identity to bytes
+- Encrypt with derived key
+- Write to file with proper format
+- Zeroize sensitive data
+- Set file permissions to user-read-only (Unix: 0600)
+
+load_identity(path: &Path, passphrase: &str) -> Result<Identity>
+- Read file
+- Verify magic bytes and version
+- Extract salt, nonce, ciphertext, tag
+- Derive key from passphrase
+- Decrypt identity
+- Deserialize to Identity struct
+- Zeroize sensitive data
+- Return identity
+
+identity_exists(path: &Path) -> bool
+- Check if identity file exists
+- Verify magic bytes are correct
+
+---
+
+## Configuration Storage (config.rs)
+
+### Config file format (JSON):
+
+config.json contains:
+- node_id: string (hex-encoded public key hash)
+- listen_port: u16
+- bootstrap_nodes: Vec<SocketAddr>
+- trusted_authorities: Vec<PublicKey> (as hex strings)
+- network_profile: string ("minimal", "standard", "bridge", "authority")
+- privacy_level: string ("standard", "enhanced", "maximum")
+- max_peers: usize
+
+This is NOT encrypted (public configuration).
+
+### Config API:
+
+save_config(path: &Path, config: &NodeConfig) -> Result<()>
+- Serialize config to JSON
+- Write to file
+- Human-readable for debugging
+
+load_config(path: &Path) -> Result<NodeConfig>
+- Read file
+- Deserialize from JSON
+- Validate fields
+- Return config or error
+
+config_exists(path: &Path) -> bool
+- Check if config file exists
+
+default_config() -> NodeConfig
+- Return sensible defaults
+- Can be customized via NodeBuilder
+
+---
+
+## Storage Abstraction
+
+### StorageBackend trait:
+
+Define trait for future extensibility:
+
+```
+trait StorageBackend {
+    fn save(&mut self, key: &str, value: &[u8]) -> Result<()>;
+    fn load(&self, key: &str) -> Result<Vec<u8>>;
+    fn exists(&self, key: &str) -> bool;
+    fn delete(&self, key: &str) -> Result<()>;
+}
+```
+
+Implementations:
+- FileSystemStorage (for MVP)
+- Future: EncryptedDatabase, CloudStorage, etc.
+
+---
+
+## Security Requirements
+
+### File Permissions:
+
+On Unix systems:
+- Identity file: 0600 (user read/write only)
+- Config file: 0644 (user read/write, others read)
+- Directory: 0700 (user only)
+
+On Windows:
+- Use DACL to restrict access to current user
+
+### Passphrase Handling:
+
+MUST:
+- Accept passphrase as &str or SecretString
+- Zeroize passphrase immediately after use
+- Never log or store passphrase
+- Derive key with strong Argon2 parameters
+
+Argon2 Parameters (recommended):
+- Memory: 64 MB (65536 KB)
+- Iterations: 3
+- Parallelism: 4
+- Output length: 32 bytes
+
+These are OWASP recommendations for interactive login.
+
+### Encryption:
+
+- Use ChaCha20-Poly1305 AEAD
+- Generate random nonce (never reuse)
+- Verify auth tag on decrypt
+- Fail gracefully on wrong passphrase
+
+---
+
+## Error Types
+
+StorageError enum:
+- FileNotFound
+- PermissionDenied
+- InvalidFormat (corrupt file)
+- DecryptionFailed (wrong passphrase)
+- SerializationFailed
+- IoError(std::io::Error)
+
+---
+
+## Testing Strategy
+
+### Unit tests:
+
+1. **Identity Storage**:
+   - Save identity, load with correct passphrase -> success
+   - Load with wrong passphrase -> error
+   - Modify encrypted file, load -> error
+   - Round-trip preserves identity exactly
+
+2. **Config Storage**:
+   - Save config, load -> fields match
+   - Invalid JSON in file -> error
+   - Missing file -> use defaults
+
+3. **File Permissions**:
+   - Created files have correct permissions
+   - Verify restricted access (Unix)
+
+4. **Concurrent Access**:
+   - Multiple reads succeed
+   - Write lock prevents corruption
+
+5. **Error Cases**:
+   - Non-existent directory -> creates it
+   - Read-only filesystem -> proper error
+   - Disk full -> proper error
+
+---
+
+## Migration Strategy
+
+### Future storage format changes:
+
+version field allows detecting old formats:
+- Version 1: Current format
+- Version 2+: Read old, write new
+- Automatic migration on load
+
+### Upgrade path:
+
+When changing format:
+1. Load old version
+2. Convert to new format
+3. Save as new version
+4. Keep old file as backup (.old)
+
+---
+
+## Success Criteria
+
+Phase 1 storage complete when:
+- Can save/load identity with passphrase
+- Can save/load configuration
+- File permissions are correct
+- Decryption fails gracefully on wrong passphrase
+- All unit tests pass
+- No secrets left in memory after operations

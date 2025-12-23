@@ -1,0 +1,588 @@
+# Phase 5: Authority Nodes
+
+## Overview
+Implement authority nodes that can publish signed content (updates, announcements)
+that regular nodes verify and trust.
+
+---
+
+## Goals
+
+- Authority key management
+- Query/response protocol
+- Signed message publication
+- Signature verification
+- Multi-signature support
+- Authority trust management
+
+---
+
+## Use Cases
+
+### 1. Software Updates:
+
+Authority publishes signed update packages:
+- New version announcement
+- Binary or configuration
+- Signature proves authenticity
+- Nodes verify and apply
+
+### 2. Authoritative Announcements:
+
+- Security advisories
+- Network configuration changes
+- Trusted news/content distribution
+
+### 3. Query Services:
+
+- Version check: "What's the latest version?"
+- Status queries: "Is service X operational?"
+- Information lookup
+
+---
+
+## Module Structure
+
+src/authority/
+├── mod.rs              # Public exports
+├── keys.rs             # Authority key management
+├── updates.rs          # Update package handling
+├── queries.rs          # Query/response logic
+└── trust.rs            # Trust management
+
+---
+
+## Authority Key Management (keys.rs)
+
+### Authority Keys vs Regular Keys:
+
+Authority keys are like regular identity keys BUT:
+- Specially designated for signing authoritative content
+- Users must explicitly trust them
+- Often long-lived (years)
+- Stored with extra security
+
+### Authority Identity:
+
+```
+pub struct AuthorityIdentity {
+    identity: Identity,
+    authority_id: AuthorityId,
+    metadata: AuthorityMetadata,
+}
+
+pub struct AuthorityMetadata {
+    pub name: String,
+    pub description: String,
+    pub url: String,
+    pub created_at: i64,
+}
+
+pub struct AuthorityId(Vec<u8>);  // Hash of authority public key
+```
+
+### Creating Authority:
+
+```
+impl AuthorityIdentity {
+    pub fn new(name: String, description: String, url: String) -> Self
+        - Generate new identity
+        - Create authority_id (hash of public key)
+        - Set metadata
+
+    pub fn from_identity(identity: Identity, metadata: AuthorityMetadata) -> Self
+        - Use existing identity as authority
+        - Set metadata
+
+    pub fn public_key(&self) -> &PublicKey
+
+    pub fn authority_id(&self) -> &AuthorityId
+
+    pub fn sign_update(&self, update: &UpdatePackage) -> Result<Signature>
+        - Sign update package
+        - Use authority private key
+
+    pub fn sign_content(&self, content: &[u8]) -> Result<Signature>
+        - Sign arbitrary content
+}
+```
+
+---
+
+## Trust Management (trust.rs)
+
+### Trusting an Authority:
+
+Users must explicitly trust authorities.
+
+```
+pub struct AuthorityTrustStore {
+    trusted_authorities: DashMap<AuthorityId, TrustedAuthority>,
+}
+
+pub struct TrustedAuthority {
+    pub authority_id: AuthorityId,
+    pub public_key: PublicKey,
+    pub metadata: AuthorityMetadata,
+    pub trust_level: TrustLevel,
+    pub added_at: i64,
+}
+
+pub enum TrustLevel {
+    UpdateAuthority,    // Can publish software updates
+    SigningAuthority,   // Can sign content
+    BootstrapAuthority, // Provides trusted peer lists
+    FullTrust,          // All above
+}
+```
+
+### Trust Store API:
+
+```
+impl AuthorityTrustStore {
+    pub fn new() -> Self
+
+    pub fn add_authority(
+        &mut self,
+        authority_id: AuthorityId,
+        public_key: PublicKey,
+        metadata: AuthorityMetadata,
+        trust_level: TrustLevel
+    ) -> Result<()>
+        - Add authority to trust store
+        - Persist to storage
+
+    pub fn remove_authority(&mut self, authority_id: &AuthorityId) -> Result<()>
+        - Remove from trust store
+
+    pub fn get_authority(&self, authority_id: &AuthorityId) -> Option<TrustedAuthority>
+        - Look up trusted authority
+
+    pub fn verify_signature(
+        &self,
+        authority_id: &AuthorityId,
+        content: &[u8],
+        signature: &Signature
+    ) -> Result<bool>
+        - Verify signature against trusted authority key
+        - Return true if valid
+
+    pub fn is_trusted(&self, authority_id: &AuthorityId, level: TrustLevel) -> bool
+        - Check if authority trusted for specific purpose
+}
+```
+
+---
+
+## Update Packages (updates.rs)
+
+### UpdatePackage Structure:
+
+Already defined in protocol (Phase 1), now implement handling:
+
+```
+pub struct UpdatePackageBuilder {
+    version: String,
+    package_data: Vec<u8>,
+    changelog: String,
+    required_version: Option<String>,
+}
+
+impl UpdatePackageBuilder {
+    pub fn new(version: String) -> Self
+
+    pub fn with_package_data(self, data: Vec<u8>) -> Self
+
+    pub fn with_changelog(self, changelog: String) -> Self
+
+    pub fn with_required_version(self, version: String) -> Self
+
+    pub fn build(self, authority: &AuthorityIdentity) -> Result<UpdatePackage>
+        - Create UpdatePackage protobuf
+        - Compute checksum (SHA256)
+        - Sign with authority key
+        - Return complete package
+}
+```
+
+### Publishing Update:
+
+```
+impl Node {
+    pub async fn publish_update(
+        &mut self,
+        update: UpdatePackage
+    ) -> Result<MessageId>
+        - Requires node to have authority identity
+        - Wrap in BaseMessage
+        - Set message_type = UPDATE_PACKAGE
+        - Broadcast to network via gossip
+        - Returns message ID
+}
+```
+
+### Receiving Update:
+
+```
+async fn handle_update_package(
+    node: &Node,
+    package: UpdatePackage,
+    sender: PublicKey
+) -> Result<()> {
+    // Extract authority ID from sender
+    let authority_id = AuthorityId::from_public_key(&sender);
+
+    // Check if we trust this authority
+    if !node.trust_store.is_trusted(&authority_id, TrustLevel::UpdateAuthority) {
+        return Err(AuthorityError::UntrustedAuthority {
+            authority_id: authority_id.to_string()
+        });
+    }
+
+    // Verify signature
+    if !verify_update_signature(&package, &sender)? {
+        return Err(AuthorityError::InvalidSignature {
+            authority_id: authority_id.to_string()
+        });
+    }
+
+    // Verify checksum
+    let computed_checksum = sha256(&package.package_data);
+    if computed_checksum != package.checksum {
+        return Err(AuthorityError::UpdateVerificationFailed {
+            reason: "Checksum mismatch".to_string()
+        });
+    }
+
+    // Check version requirements
+    if !meets_version_requirement(&package.required_version)? {
+        // Skip update (not for our version)
+        return Ok(());
+    }
+
+    // Emit UpdateAvailable event
+    node.emit_event(Event::UpdateAvailable {
+        version: package.version.clone(),
+        changelog: package.changelog.clone(),
+        size: package.package_data.len(),
+    });
+
+    Ok(())
+}
+```
+
+---
+
+## Multi-Signature Support
+
+### Why Multi-Sig:
+
+For critical updates:
+- Require multiple authorities to sign
+- Prevents single compromised key
+- Example: Require 2 of 3 authority signatures
+
+### Implementation:
+
+```
+pub struct MultiSigUpdatePackage {
+    package: UpdatePackage,
+    signatures: Vec<(AuthorityId, Signature)>,
+    threshold: usize,  // Minimum required signatures
+}
+
+impl MultiSigUpdatePackage {
+    pub fn verify(
+        &self,
+        trust_store: &AuthorityTrustStore
+    ) -> Result<bool> {
+        let mut valid_sigs = 0;
+
+        for (authority_id, signature) in &self.signatures {
+            if trust_store.verify_signature(
+                authority_id,
+                &serialize(&self.package)?,
+                signature
+            )? {
+                valid_sigs += 1;
+            }
+        }
+
+        Ok(valid_sigs >= self.threshold)
+    }
+}
+```
+
+---
+
+## Query/Response Protocol (queries.rs)
+
+### Query Types:
+
+```
+pub enum QueryType {
+    VersionCheck,
+    UpdateAvailable { current_version: String },
+    NodeStatus,
+    Custom(String),
+}
+```
+
+### Sending Query:
+
+```
+impl Node {
+    pub async fn query_authority(
+        &mut self,
+        authority_id: &AuthorityId,
+        query_type: QueryType,
+        timeout: Duration
+    ) -> Result<ResponseMessage>
+        - Create QueryMessage
+        - Encrypt for authority
+        - Route to authority
+        - Wait for response (with timeout)
+        - Decrypt and return response
+}
+```
+
+### Query Message Construction:
+
+```
+fn build_query_message(
+    identity: &Identity,
+    authority_public_key: &PublicKey,
+    query_type: QueryType
+) -> Result<BaseMessage> {
+    // Serialize query
+    let query_data = serialize(&query_type)?;
+
+    // Encrypt for authority
+    let encrypted = encrypt_for_recipient(identity, authority_public_key, &query_data)?;
+
+    // Create QueryMessage
+    let query_msg = QueryMessage {
+        query_id: generate_random_id(),
+        query_type: format!("{:?}", query_type),
+        query_data: encrypted.ciphertext,
+        response_required: true,
+        timeout_ms: timeout.as_millis() as u32,
+    };
+
+    // Wrap in BaseMessage
+    let base_msg = BaseMessage {
+        version: 1,
+        message_id: hash_message(&serialize(&query_msg)?),
+        message_type: MessageType::Query,
+        timestamp: current_timestamp_ms(),
+        sender_public_key: identity.public_key().to_bytes(),
+        payload: serialize(&query_msg)?,
+        signature: vec![],  // Sign after
+        routing_info: None,
+    };
+
+    // Sign
+    let signed = sign_base_message(identity, base_msg)?;
+
+    Ok(signed)
+}
+```
+
+### Authority Responding to Query:
+
+```
+impl Node {
+    pub async fn on_query_received<F>(
+        &mut self,
+        handler: F
+    ) where
+        F: Fn(QueryEvent) -> QueryResponse + Send + Sync + 'static
+        - Register callback for query events
+        - Called when query received
+        - Handler returns response
+
+    async fn respond_to_query(
+        &mut self,
+        query_id: Vec<u8>,
+        requester: PublicKey,
+        response_data: Vec<u8>
+    ) -> Result<()>
+        - Encrypt response for requester
+        - Create ResponseMessage
+        - Route back to requester
+}
+```
+
+### Query Event:
+
+```
+pub struct QueryEvent {
+    pub query_id: Vec<u8>,
+    pub query_type: String,
+    pub query_data: Vec<u8>,
+    pub requester: PublicKey,
+}
+
+pub enum QueryResponse {
+    Success(Vec<u8>),
+    NotFound,
+    Error(String),
+}
+```
+
+---
+
+## Update Application (updates.rs)
+
+### Auto-Update Flow:
+
+```
+impl Node {
+    pub async fn enable_auto_update(
+        &mut self,
+        authority_id: AuthorityId,
+        check_interval: Duration,
+        auto_apply: bool
+    ) -> Result<()>
+        - Spawn background task
+        - Periodically query authority for updates
+        - If update available:
+          - If auto_apply: download and apply
+          - Else: emit event, wait for user approval
+}
+```
+
+### Update Check Task:
+
+```
+async fn auto_update_task(
+    node: Arc<Mutex<Node>>,
+    authority_id: AuthorityId,
+    interval: Duration,
+    auto_apply: bool
+) {
+    loop {
+        tokio::time::sleep(interval).await;
+
+        let node = node.lock().await;
+
+        // Query for updates
+        let query = QueryType::UpdateAvailable {
+            current_version: env!("CARGO_PKG_VERSION").to_string()
+        };
+
+        match node.query_authority(&authority_id, query, Duration::from_secs(30)).await {
+            Ok(response) if response.response_code == ResponseCode::Success => {
+                // Parse update info
+                let update_info: UpdateInfo = deserialize(&response.response_data)?;
+
+                if auto_apply {
+                    // Download and apply update
+                    let _ = apply_update(node, update_info).await;
+                } else {
+                    // Notify user
+                    node.emit_event(Event::UpdateAvailable {
+                        version: update_info.version,
+                        changelog: update_info.changelog,
+                        size: update_info.size,
+                    });
+                }
+            }
+            _ => {
+                // No update or error, continue
+            }
+        }
+    }
+}
+```
+
+---
+
+## Testing Strategy
+
+### Unit Tests:
+
+1. **Authority Key Generation**:
+   - Create authority identity
+   - Verify authority ID
+   - Sign content, verify signature
+
+2. **Trust Store**:
+   - Add trusted authority
+   - Verify signature from trusted authority
+   - Reject signature from untrusted authority
+
+3. **Update Package**:
+   - Build update package
+   - Verify checksum
+   - Sign and verify
+
+4. **Multi-Sig**:
+   - Create package with multiple signatures
+   - Verify with threshold
+   - Insufficient signatures -> reject
+
+### Integration Tests:
+
+1. **Publish and Receive Update**:
+   - Authority node publishes update
+   - Regular node receives and verifies
+   - Update event emitted
+
+2. **Query/Response**:
+   - Node sends query to authority
+   - Authority responds
+   - Requester receives response
+
+3. **Untrusted Authority**:
+   - Node receives update from untrusted authority
+   - Verify rejection
+
+4. **Version Check**:
+   - Node queries for updates
+   - Authority responds with newer version
+   - Node receives update info
+
+---
+
+## Security Considerations
+
+### Key Protection:
+
+Authority keys are high-value targets:
+- Store with strong passphrase
+- Use hardware security module (future)
+- Rotate keys periodically
+- Have backup keys
+
+### Signature Verification:
+
+ALWAYS verify:
+- Signature is valid
+- Signer is trusted authority
+- Signature is for expected content type
+- Timestamp is recent (prevent replay)
+
+### Update Security:
+
+Before applying update:
+- Verify signature
+- Verify checksum
+- Check version compatibility
+- Backup current version
+- Test update in sandbox (advanced)
+
+---
+
+## Success Criteria
+
+Phase 5 authority complete when:
+- Can create authority identity
+- Can publish signed updates
+- Nodes verify authority signatures
+- Trust store manages trusted authorities
+- Query/response protocol works
+- Multi-signature support
+- Auto-update checks for new versions
+- Integration test: Authority publishes, nodes receive and verify
+- Untrusted authorities rejected

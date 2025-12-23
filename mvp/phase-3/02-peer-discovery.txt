@@ -1,0 +1,436 @@
+# Phase 3: Peer Discovery
+
+## Overview
+Implement mechanisms for nodes to find and connect to each other automatically.
+Phase 3 focuses on local network discovery (mDNS).
+
+---
+
+## Goals
+
+- Automatic peer discovery on local network
+- Manual peer addition (for known addresses)
+- Peer information storage
+- Bootstrap node support (for wide-area network)
+
+---
+
+## Discovery Methods
+
+### Phase 3 (MVP):
+
+1. **Manual**: User provides peer addresses explicitly
+2. **mDNS**: Discover peers on same local network (LAN)
+3. **Bootstrap**: Connect to known bootstrap nodes
+
+### Future Phases:
+
+4. **DHT**: Distributed hash table for global discovery
+5. **Peer Exchange**: Learn about peers from connected peers
+
+---
+
+## Module: discovery.rs
+
+### DiscoveryMethod Enum:
+
+```
+pub enum DiscoveryMethod {
+    Manual,
+    LocalMDNS,
+    Bootstrap,
+}
+```
+
+---
+
+## Manual Discovery
+
+### API:
+
+```
+impl Node {
+    pub async fn add_peer(
+        &mut self,
+        address: SocketAddr,
+        expected_public_key: Option<PublicKey>
+    ) -> Result<NodeId>
+        - Connect to specified address
+        - Perform TLS handshake
+        - If expected_public_key provided: verify
+        - Store peer info
+        - Return NodeId
+
+    pub async fn remove_peer(&mut self, peer_id: &NodeId) -> Result<()>
+        - Close connection to peer
+        - Remove from peer list
+
+    pub fn list_peers(&self) -> Vec<PeerInfo>
+        - Return information about all connected peers
+}
+```
+
+### PeerInfo Structure:
+
+```
+pub struct PeerInfo {
+    pub peer_id: NodeId,
+    pub public_key: PublicKey,
+    pub address: SocketAddr,
+    pub connected_since: Instant,
+    pub bytes_sent: u64,
+    pub bytes_received: u64,
+    pub last_seen: Instant,
+    pub reputation: f64,
+}
+```
+
+---
+
+## mDNS Discovery (Local Network)
+
+### What is mDNS:
+
+- Multicast DNS
+- Zero-configuration networking
+- Discovers services on local network
+- Like Bonjour (Apple) or Avahi (Linux)
+
+### Service Advertisement:
+
+Each node advertises:
+- Service type: "_meshara._tcp.local"
+- Port: node's listen port
+- TXT records:
+  - version=1 (protocol version)
+  - pubkey=<hex-encoded-public-key>
+  - node_id=<hex-encoded-node-id>
+
+### Using mdns-sd Crate:
+
+Already in Cargo.toml (optional dependency).
+
+```
+pub struct MdnsDiscovery {
+    mdns: ServiceDaemon,
+    service_name: String,
+}
+
+impl MdnsDiscovery {
+    pub fn new(node_id: &NodeId, port: u16, public_key: &PublicKey) -> Result<Self>
+        - Create mDNS service
+        - Register "_meshara._tcp.local"
+        - Set TXT records with public key
+        - Start advertising
+
+    pub async fn discover_peers(&mut self) -> Result<Vec<PeerAddress>>
+        - Browse for "_meshara._tcp.local"
+        - Resolve found services
+        - Extract addresses and public keys
+        - Return list of discovered peers
+
+    pub fn stop(&mut self)
+        - Stop advertising
+        - Clean up mDNS service
+}
+
+pub struct PeerAddress {
+    pub address: SocketAddr,
+    pub public_key: PublicKey,
+    pub node_id: NodeId,
+}
+```
+
+### Discovery Loop:
+
+Run continuous discovery:
+
+```
+async fn mdns_discovery_loop(
+    discovery: Arc<Mutex<MdnsDiscovery>>,
+    connection_pool: Arc<ConnectionPool>,
+    interval: Duration
+) {
+    loop {
+        // Discover peers
+        let peers = discovery.lock().await.discover_peers().await;
+
+        // Connect to new peers
+        for peer in peers {
+            if !connection_pool.has_connection(&peer.node_id) {
+                // Attempt connection
+                let _ = connection_pool.get_or_connect(
+                    &peer.node_id,
+                    peer.address,
+                    tls_config.clone()
+                ).await;
+            }
+        }
+
+        tokio::time::sleep(interval).await;
+    }
+}
+```
+
+Run this in background task when node starts.
+
+---
+
+## Bootstrap Nodes
+
+### What are Bootstrap Nodes:
+
+- Known, stable nodes with public addresses
+- Help new nodes join network
+- Provide initial peer list
+
+### Configuration:
+
+```
+impl NodeBuilder {
+    pub fn with_bootstrap_nodes(self, nodes: Vec<SocketAddr>) -> Self
+        - Set bootstrap node addresses
+        - Will connect on startup
+}
+```
+
+### Bootstrap Connection:
+
+On node startup:
+1. Connect to all bootstrap nodes
+2. Exchange peer lists (future: peer exchange protocol)
+3. Connect to learned peers
+4. Begin participating in network
+
+### Bootstrap Node List:
+
+For Phase 3 (testing):
+- Run 1-2 bootstrap nodes on known addresses
+- Hardcode for MVP testing
+
+For production:
+- Ship with default bootstrap list
+- Allow user to add custom bootstraps
+- Automatically discover more peers via DHT (future)
+
+---
+
+## Peer Information Storage
+
+### PeerStore:
+
+Persist known peers across restarts:
+
+```
+pub struct PeerStore {
+    storage: Box<dyn StorageBackend>,
+}
+
+impl PeerStore {
+    pub fn new(storage: Box<dyn StorageBackend>) -> Self
+
+    pub async fn save_peer(&self, peer: &PeerInfo) -> Result<()>
+        - Serialize peer info
+        - Store with key: "peer:{node_id}"
+
+    pub async fn load_peers(&self) -> Result<Vec<PeerInfo>>
+        - Load all saved peers
+        - Return list
+
+    pub async fn remove_peer(&self, node_id: &NodeId) -> Result<()>
+        - Delete peer from storage
+}
+```
+
+### Peer Reputation:
+
+Track peer behavior:
+- Successful messages: +score
+- Failed verifications: -score
+- Timeout/disconnect: -score
+- Malicious behavior: ban
+
+Store reputation in PeerInfo.
+
+---
+
+## Connection Strategy
+
+### How Many Peers:
+
+Configurable via NodeBuilder:
+- Minimal: 4-8 peers
+- Standard: 16-32 peers
+- Bridge: 64-128 peers
+
+### Peer Selection:
+
+When connecting to peers:
+1. Prefer peers with good reputation
+2. Maintain diversity (different networks)
+3. Replace failed peers automatically
+
+### Connection Maintenance:
+
+Background task:
+- Monitor active connections
+- Disconnect low-reputation peers
+- Connect to new peers if below target
+- Ping inactive peers (heartbeat)
+
+---
+
+## Heartbeat / Keep-Alive
+
+### Purpose:
+
+Detect dead connections early.
+
+### Implementation:
+
+```
+async fn heartbeat_loop(connection: Arc<Mutex<Connection>>) {
+    let interval = Duration::from_secs(30);
+
+    loop {
+        tokio::time::sleep(interval).await;
+
+        let mut conn = connection.lock().await;
+
+        // Send ping (empty message or special type)
+        if conn.send_ping().await.is_err() {
+            // Connection dead, remove it
+            break;
+        }
+    }
+}
+```
+
+Spawn heartbeat task for each connection.
+
+---
+
+## NAT Traversal (Future)
+
+Phase 3: Simple approach:
+- Direct connections on same network (mDNS)
+- Public IPs (bootstrap nodes)
+
+Phase 4+: Advanced NAT traversal:
+- STUN/TURN for NAT discovery
+- Hole punching techniques
+- Relay through bridge nodes
+
+---
+
+## Testing Strategy
+
+### Unit Tests:
+
+1. **Manual Peer Addition**:
+   - Add peer by address
+   - Verify connection established
+   - Verify peer in list
+
+2. **Peer Store**:
+   - Save peer info
+   - Load peers
+   - Verify persistence
+
+3. **Reputation**:
+   - Update peer reputation
+   - Verify score changes
+   - Bad peers get disconnected
+
+### Integration Tests:
+
+1. **mDNS Discovery**:
+   - Start 2 nodes on same network
+   - Enable mDNS
+   - Verify they discover each other
+   - Verify automatic connection
+
+2. **Bootstrap Nodes**:
+   - Start bootstrap node
+   - Start regular node with bootstrap address
+   - Verify connection
+   - Verify peer list updated
+
+3. **Connection Limits**:
+   - Set max_peers = 2
+   - Try to connect to 5 peers
+   - Verify only 2 connections active
+
+4. **Peer Replacement**:
+   - Connect to peers
+   - Disconnect one
+   - Verify new peer connected automatically
+
+---
+
+## Security Considerations
+
+### Verify Public Keys:
+
+- Always verify peer public key during TLS
+- Store known peers with public key pinning
+- Reject if public key changes (possible MITM)
+
+### Rate Limiting:
+
+Prevent connection flooding:
+- Limit new connections per minute
+- Limit mDNS discovery frequency
+- Exponential backoff for failed connections
+
+### Sybil Resistance:
+
+In Phase 3: Basic protection:
+- Limit peers from same IP range
+- Require proof-of-work (future)
+- Reputation system
+
+---
+
+## Configuration
+
+### Discovery Configuration:
+
+```
+pub struct DiscoveryConfig {
+    pub enabled_methods: Vec<DiscoveryMethod>,
+    pub mdns_interval: Duration,
+    pub bootstrap_nodes: Vec<SocketAddr>,
+    pub max_peers: usize,
+    pub target_peers: usize,
+}
+
+impl Default for DiscoveryConfig {
+    fn default() -> Self {
+        Self {
+            enabled_methods: vec![
+                DiscoveryMethod::Manual,
+                DiscoveryMethod::LocalMDNS,
+            ],
+            mdns_interval: Duration::from_secs(30),
+            bootstrap_nodes: vec![],
+            max_peers: 32,
+            target_peers: 16,
+        }
+    }
+}
+```
+
+---
+
+## Success Criteria
+
+Phase 3 discovery complete when:
+- Can manually add/remove peers
+- mDNS discovers peers on local network
+- Can connect to bootstrap nodes
+- Peer information persists across restarts
+- Connection pool maintains target peer count
+- Heartbeat detects dead connections
+- Integration test: Nodes discover and connect automatically
+- Peer reputation tracked correctly

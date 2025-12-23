@@ -1,0 +1,405 @@
+# Phase 2: Message Construction
+
+## Overview
+Implement the logic to construct complete, signed, encrypted messages using
+Phase 1 components (crypto + protocol).
+
+---
+
+## Goals
+
+- Combine crypto operations with protocol messages
+- Create properly formatted BaseMessage structures
+- Handle signing and encryption in correct order
+- Provide clean internal APIs for message creation
+
+---
+
+## Message Construction Flow
+
+### Private Message Creation:
+
+1. **Prepare Content**:
+   - Application provides plaintext bytes
+   - No modification needed
+
+2. **Encrypt Content**:
+   - Use encrypt_for_recipient() from crypto layer
+   - Get EncryptedMessage with:
+     - ephemeral_public_key
+     - nonce
+     - ciphertext
+
+3. **Create PrivateMessagePayload**:
+   - Set content = ciphertext
+   - Set ephemeral_public_key from encryption
+   - Set nonce from encryption
+   - Serialize to bytes using prost
+
+4. **Create BaseMessage**:
+   - Set version = 1
+   - Set message_id = Blake3 hash of encrypted payload
+   - Set message_type = PRIVATE_MESSAGE
+   - Set timestamp = current time (milliseconds)
+   - Set sender_public_key = sender's Ed25519 public key
+   - Set payload = serialized PrivateMessagePayload
+
+5. **Sign BaseMessage**:
+   - Sign the payload field
+   - Set signature field
+
+6. **Serialize BaseMessage**:
+   - Use prost to serialize entire BaseMessage
+   - Result: bytes ready for transmission
+
+---
+
+### Broadcast Message Creation:
+
+1. **Create BroadcastPayload**:
+   - Set content = plaintext (not encrypted!)
+   - Set content_type = provided MIME type
+   - Set metadata if any
+   - Serialize to bytes
+
+2. **Create BaseMessage**:
+   - Set version = 1
+   - Set message_id = Blake3 hash of payload
+   - Set message_type = BROADCAST
+   - Set timestamp = current time
+   - Set sender_public_key
+   - Set payload = serialized BroadcastPayload
+
+3. **Sign BaseMessage**:
+   - Sign the payload
+   - Set signature
+
+4. **Serialize**:
+   - Serialize entire BaseMessage to bytes
+
+Note: Broadcast is NOT encrypted (public message)
+
+---
+
+## Message Parsing Flow
+
+### Receiving Any Message:
+
+1. **Deserialize BaseMessage**:
+   - Receive bytes from source (network/in-memory)
+   - Deserialize to BaseMessage using prost
+   - Validate structure
+
+2. **Verify Signature**:
+   - Extract sender_public_key
+   - Verify signature against payload
+   - If invalid: reject message immediately
+
+3. **Check Message Type**:
+   - Switch on message_type field
+   - Route to appropriate handler
+
+### Parsing Private Message:
+
+1. **Deserialize Payload**:
+   - payload bytes -> PrivateMessagePayload
+
+2. **Decrypt Content**:
+   - Extract ephemeral_public_key and nonce
+   - Use decrypt_message() from crypto layer
+   - Get plaintext content
+
+3. **Return Parsed Message**:
+   - Return content + metadata to application
+
+### Parsing Broadcast:
+
+1. **Deserialize Payload**:
+   - payload bytes -> BroadcastPayload
+
+2. **Extract Content**:
+   - Content is plaintext (not encrypted)
+   - Extract content and metadata
+
+3. **Return Parsed Message**:
+   - Return content to application
+
+---
+
+## Internal Message Builder API
+
+Create internal types for cleaner message construction:
+
+### MessageBuilder:
+
+```
+pub(crate) struct MessageBuilder {
+    identity: Identity,
+}
+
+impl MessageBuilder {
+    pub fn new(identity: Identity) -> Self
+
+    pub fn build_private_message(
+        &self,
+        recipient: &PublicKey,
+        content: &[u8]
+    ) -> Result<BaseMessage>
+        - Encrypt content for recipient
+        - Create PrivateMessagePayload
+        - Wrap in BaseMessage
+        - Sign
+        - Return complete message
+
+    pub fn build_broadcast(
+        &self,
+        content: &[u8],
+        content_type: &str
+    ) -> Result<BaseMessage>
+        - Create BroadcastPayload
+        - Wrap in BaseMessage
+        - Sign
+        - Return complete message
+}
+```
+
+### MessageParser:
+
+```
+pub(crate) struct MessageParser {
+    identity: Identity,
+}
+
+impl MessageParser {
+    pub fn new(identity: Identity) -> Self
+
+    pub fn parse_message(&self, bytes: &[u8]) -> Result<ParsedMessage>
+        - Deserialize BaseMessage
+        - Verify signature
+        - Parse based on type
+        - Return ParsedMessage enum
+
+    fn verify_signature(&self, msg: &BaseMessage) -> Result<bool>
+        - Verify Ed25519 signature
+        - Return true/false
+
+    fn parse_private_message(&self, msg: &BaseMessage) -> Result<ParsedMessage>
+        - Decrypt payload
+        - Return private message details
+
+    fn parse_broadcast(&self, msg: &BaseMessage) -> Result<ParsedMessage>
+        - Extract payload
+        - Return broadcast details
+}
+```
+
+### ParsedMessage Enum:
+
+```
+pub(crate) enum ParsedMessage {
+    PrivateMessage {
+        message_id: MessageId,
+        sender: PublicKey,
+        content: Vec<u8>,
+        timestamp: i64,
+        verified: bool,
+    },
+
+    Broadcast {
+        message_id: MessageId,
+        sender: PublicKey,
+        content: Vec<u8>,
+        content_type: String,
+        timestamp: i64,
+        verified: bool,
+    },
+
+    // Future message types:
+    // UpdatePackage { ... },
+    // Query { ... },
+    // Response { ... },
+}
+```
+
+---
+
+## Message Validation
+
+### BaseMessage Validation:
+
+Check before processing:
+- version == 1 (current protocol version)
+- message_id is 32 bytes
+- sender_public_key is 32 bytes (Ed25519)
+- signature is 64 bytes (Ed25519)
+- timestamp is reasonable (not too far in future/past)
+- payload is not empty
+- message_type is valid enum value
+
+### PrivateMessagePayload Validation:
+
+- ephemeral_public_key is 32 bytes (X25519)
+- nonce is 12 bytes (ChaCha20-Poly1305)
+- content is not empty (encrypted, so non-zero)
+
+### BroadcastPayload Validation:
+
+- content_type is valid UTF-8
+- content is not empty
+
+---
+
+## Error Handling
+
+Errors during message construction/parsing:
+
+From ProtocolError:
+- SerializationFailed
+- DeserializationFailed
+- InvalidMessageType
+- InvalidFieldValue
+- InvalidSignature
+
+From CryptoError:
+- EncryptionFailed
+- DecryptionFailed
+- SigningFailed
+- InvalidSignature
+
+---
+
+## Message ID Generation
+
+### Consistent Message IDs:
+
+Message ID should be deterministic from content:
+
+```
+fn generate_message_id(payload: &[u8]) -> MessageId {
+    // Blake3 hash of payload
+    let hash = blake3::hash(payload);
+    MessageId(hash.as_bytes().to_vec())
+}
+```
+
+This allows:
+- Detecting duplicate messages
+- Verifying message integrity
+- Deduplication in routing
+
+---
+
+## Timestamp Handling
+
+### Current Time:
+
+```
+fn current_timestamp_ms() -> i64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64
+}
+```
+
+### Timestamp Validation:
+
+Accept messages where:
+- timestamp is not too far in future (< 5 minutes)
+- timestamp is not too old (< 24 hours)
+
+This prevents replay attacks and clock sync issues.
+
+---
+
+## Testing Strategy
+
+### Unit Tests:
+
+1. **Private Message Construction**:
+   - Build private message
+   - Verify all fields set correctly
+   - Verify signature is valid
+   - Verify can be serialized
+
+2. **Broadcast Construction**:
+   - Build broadcast
+   - Verify fields
+   - Verify signature
+   - Verify serialization
+
+3. **Message Parsing**:
+   - Construct message
+   - Serialize
+   - Parse back
+   - Verify fields match
+
+4. **Signature Verification**:
+   - Valid signature -> true
+   - Invalid signature -> false
+   - Modified payload -> false
+
+5. **Encryption Round-Trip**:
+   - Build private message
+   - Parse private message
+   - Verify content matches original
+
+6. **Error Cases**:
+   - Invalid version -> error
+   - Invalid signature -> error
+   - Corrupt payload -> error
+   - Wrong recipient decrypts -> error
+
+### Integration Tests:
+
+1. **End-to-End Private Message**:
+   - Node A constructs message for Node B
+   - Serialize
+   - Node B parses and verifies
+   - Content matches
+
+2. **End-to-End Broadcast**:
+   - Node A constructs broadcast
+   - Nodes B, C parse and verify
+   - All see same content
+
+3. **Message ID Uniqueness**:
+   - Send many messages
+   - Verify all IDs are unique
+
+4. **Timestamp Validation**:
+   - Future timestamp rejected
+   - Old timestamp rejected
+   - Current timestamp accepted
+
+---
+
+## Performance Considerations
+
+### Avoid Copying:
+
+- Use references where possible
+- Only clone when necessary
+- Consider zero-copy serialization
+
+### Batch Operations:
+
+When sending multiple messages:
+- Reuse MessageBuilder
+- Batch signature operations if possible
+- Serialize in parallel (future optimization)
+
+---
+
+## Success Criteria
+
+Phase 2 message construction complete when:
+- Can build private messages (encrypted, signed)
+- Can build broadcast messages (signed)
+- Can parse received messages
+- Signature verification works
+- Encryption/decryption round-trip works
+- All validation passes
+- Tests cover happy path and error cases
+- Integration test: full message flow works
