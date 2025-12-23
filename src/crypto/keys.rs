@@ -301,6 +301,29 @@ impl Identity {
     pub(crate) fn encryption_keypair(&self) -> &X25519StaticSecret {
         &self.encryption_keypair
     }
+
+    /// Create identity from raw key bytes (internal use only)
+    ///
+    /// This is used by the storage layer to reconstruct identities from disk.
+    ///
+    /// # Arguments
+    ///
+    /// * `signing_bytes` - Ed25519 signing key bytes (32 bytes)
+    /// * `encryption_bytes` - X25519 encryption key bytes (32 bytes)
+    ///
+    /// # Security
+    ///
+    /// This method should only be used internally by trusted storage code.
+    /// The caller must ensure bytes are zeroized after use.
+    pub(crate) fn from_raw_bytes(signing_bytes: &[u8; 32], encryption_bytes: &[u8; 32]) -> Self {
+        let signing_keypair = SigningKey::from_bytes(signing_bytes);
+        let encryption_keypair = X25519StaticSecret::from(*encryption_bytes);
+
+        Self {
+            signing_keypair,
+            encryption_keypair,
+        }
+    }
 }
 
 /// Public key that can be safely shared with others

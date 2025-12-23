@@ -17,6 +17,26 @@ pub enum Error {
     #[error("Storage error: {0}")]
     Storage(String),
 
+    /// File not found error
+    #[error("File not found: {0}")]
+    FileNotFound(String),
+
+    /// Permission denied error
+    #[error("Permission denied: {0}")]
+    PermissionDenied(String),
+
+    /// Invalid format error (corrupt file)
+    #[error("Invalid file format: {0}")]
+    InvalidFormat(String),
+
+    /// Decryption failed (wrong passphrase)
+    #[error("Decryption failed: {0}")]
+    DecryptionFailed(String),
+
+    /// Serialization failed
+    #[error("Serialization failed: {0}")]
+    SerializationFailed(String),
+
     /// Protocol errors
     #[error("Protocol error: {0}")]
     Protocol(String),

@@ -76,6 +76,7 @@ dashmap = "6.1"
 
 # Storage
 redb = { version = "3.1", optional = true }
+directories = "6.0"
 
 # Metrics (optional)
 prometheus = { version = "0.14", optional = true }
