@@ -16,6 +16,20 @@ safe application of updates.
 
 ---
 
+## Protocol Prerequisites
+
+**IMPORTANT**: This phase requires additional protobuf message types to be defined in proto/messages.proto:
+
+- **UpdateAnnouncement**: Broadcast small announcement first (< 1KB)
+- **UpdateRequest**: Request specific chunks from peers
+- **UpdateChunk**: Response with chunk data
+
+These extend the base protocol defined in Phase 1 and should be added to the protobuf schema before implementing this phase.
+
+See phase-1/02-protocol-buffers.txt for the complete message definitions.
+
+---
+
 ## Update Distribution Strategy
 
 ### Gossip-Based Propagation:

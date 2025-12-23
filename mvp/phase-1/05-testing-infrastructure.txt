@@ -339,6 +339,37 @@ pub fn create_temp_storage() -> TempDir {
 
 ---
 
+## Cross-Phase Integration Testing Strategy
+
+**Important**: Later phases will require integration tests that span multiple phases.
+
+### Phase Dependencies for Integration Tests:
+
+**Phase 3 integration tests need**:
+- Phase 1: Crypto + Protocol
+- Phase 2: Node API
+- Phase 3: TLS Networking
+
+**Phase 4 integration tests need**:
+- All of Phase 3 +
+- Routing logic with real network
+
+**Phase 5 integration tests need**:
+- All of Phase 4 +
+- Authority system
+
+### Planning Ahead:
+
+Set up integration test infrastructure in Phase 1 to support multi-phase scenarios:
+- Test fixtures that work across phases
+- Mock network utilities (already planned)
+- Shared test helpers for common operations
+- Ability to spawn multiple test nodes easily
+
+This avoids rework when integration tests become more complex in later phases.
+
+---
+
 ## Coverage
 
 ### Measure Coverage:

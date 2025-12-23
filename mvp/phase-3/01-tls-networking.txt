@@ -449,6 +449,33 @@ For known peers:
 
 ---
 
+## Future Enhancement: HTTP/2 Framing
+
+**Note**: idea.txt describes optional HTTP/2 framing (lines 167-199) for enhanced HTTPS mimicry.
+
+This is deferred to Phase 6 (Privacy Features) but the TLS implementation should be designed to allow HTTP/2 framing to be added later without major refactoring.
+
+### Design Considerations:
+
+- Use abstractions that can wrap messages in HTTP/2 frames
+- Allow configurable ALPN (meshara/1.0 vs h2)
+- Transport layer should be agnostic to framing
+- Message framing should be pluggable
+
+### HTTP/2 Framing Strategy (Future):
+
+When enabled:
+- Connection uses ALPN "h2" instead of "meshara/1.0"
+- Meshara messages sent as HTTP/2 DATA frames
+- Use pseudo-headers to look like HTTP POST requests
+- Path: /api/v1/message
+- Content-Type: application/octet-stream
+- To observer: looks like encrypted REST API traffic
+
+This makes traffic indistinguishable from normal HTTPS web services.
+
+---
+
 ## Success Criteria
 
 Phase 3 TLS complete when:

@@ -164,6 +164,84 @@ ResponseCode enum:
 
 ---
 
+### RouteAdvertisement (for route discovery - Phase 4)
+
+Periodic peer route announcements for route discovery.
+
+Fields:
+- repeated RouteEntry routes (list of known routes)
+
+RouteEntry submessage:
+- bytes node_id (32-byte node ID)
+- uint32 hop_count (distance to this node)
+- int64 last_seen (timestamp when route was updated)
+
+---
+
+### Acknowledgment (for reliable delivery - Phase 4)
+
+Confirm message receipt for reliable delivery.
+
+Fields:
+- bytes message_id (32-byte ID of message being acknowledged)
+- bool success (whether message was processed successfully)
+- optional string error_message (if success=false, why it failed)
+
+---
+
+### UpdateAnnouncement (for update distribution - Phase 5)
+
+Small announcement about available update (before full download).
+
+Fields:
+- string version (semantic version string)
+- bytes update_id (32-byte Blake3 hash of package_data)
+- uint64 size (total size in bytes)
+- bytes checksum (32-byte SHA256)
+- repeated bytes signatures (for multi-sig)
+
+---
+
+### UpdateRequest (for update distribution - Phase 5)
+
+Request specific chunk of an update package.
+
+Fields:
+- bytes update_id (which update)
+- uint32 chunk_index (which chunk, 0-indexed)
+
+---
+
+### UpdateChunk (for update distribution - Phase 5)
+
+Response containing one chunk of update data.
+
+Fields:
+- bytes update_id (which update this chunk belongs to)
+- uint32 chunk_index (which chunk this is)
+- uint32 total_chunks (how many chunks total)
+- bytes data (actual chunk data, up to 64KB)
+- bytes chunk_hash (Blake3 hash of this chunk for verification)
+
+---
+
+## Future Message Types (Planning Ahead)
+
+The following message types are used in later phases. Recommendation: Define all message types upfront in Phase 1 to ensure schema stability and avoid breaking changes later.
+
+**Phase 4 - Routing**:
+- RouteAdvertisement: For route discovery
+- Acknowledgment: For reliable delivery
+
+**Phase 5 - Updates**:
+- UpdateAnnouncement: Lightweight update notification
+- UpdateRequest: Request update chunks
+- UpdateChunk: Deliver update chunks
+
+All message types should be added to the MessageType enum and properly handled in the protocol layer.
+
+---
+
 ## Build Script (build.rs)
 
 The build.rs file should:

@@ -1,0 +1,310 @@
+# Phase 1: Protocol Versioning Strategy
+
+## Overview
+Plan for how the protocol will evolve across MVP phases and beyond while maintaining backward compatibility.
+
+---
+
+## Version Field Usage
+
+BaseMessage.version field (uint32) tracks protocol evolution:
+- **Version 1**: MVP implementation (Phases 1-5)
+- **Future versions**: Protocol extensions with new capabilities
+
+---
+
+## Adding New Message Types
+
+Safe to add at any time (backward compatible):
+- New MessageType enum values
+- New message structures
+- New optional fields in existing messages
+
+Older nodes will:
+- Ignore unknown message types
+- Skip unknown fields (protobuf handles this automatically)
+- Continue functioning normally
+
+---
+
+## Field Evolution Rules
+
+Based on idea.txt (lines 261-268) and protobuf best practices:
+
+### ALLOWED (Backward Compatible):
+- Add new optional fields to existing messages
+- Add new enum values (with reserved numbers for removed values)
+- Add new message types
+- Add new services or RPCs
+- Reserve field numbers for removed fields
+
+### NOT ALLOWED (Breaking Changes):
+- Remove fields (mark as deprecated instead, use reserved)
+- Change field types (int32 -> int64, etc.)
+- Change field numbers
+- Make optional fields required
+- Remove enum values (reserve the number instead)
+
+### Best Practices:
+- Always use optional for new fields
+- Document field deprecation in comments
+- Use reserved keyword for removed field numbers
+- Plan field numbers carefully (leave gaps for future use)
+
+---
+
+## Phase-by-Phase Message Types
+
+### Phase 1 - Core Messages:
+**BaseMessage framework**:
+- BaseMessage (outer wrapper)
+- RoutingInfo (for multi-hop routing)
+
+**Payload types**:
+- PrivateMessagePayload (encrypted messages)
+- BroadcastPayload (public broadcasts)
+- UpdatePackage (signed updates)
+- QueryMessage (authority queries)
+- ResponseMessage (query responses)
+
+### Phase 4 - Routing Extensions:
+**New message types**:
+- RouteAdvertisement (share known routes)
+- RouteEntry (submessage for route entries)
+- Acknowledgment (confirm message receipt)
+
+**MessageType enum additions**:
+- ROUTE_ADVERTISEMENT = 5
+- ACKNOWLEDGMENT = 6
+
+### Phase 5 - Update Distribution Extensions:
+**New message types**:
+- UpdateAnnouncement (lightweight update notification)
+- UpdateRequest (request specific chunks)
+- UpdateChunk (deliver chunk data)
+
+**MessageType enum additions**:
+- UPDATE_ANNOUNCEMENT = 7
+- UPDATE_REQUEST = 8
+- UPDATE_CHUNK = 9
+
+---
+
+## Backward Compatibility Strategy
+
+### Reading Future Messages:
+
+When old node receives message from newer node:
+1. Deserialize BaseMessage successfully (common structure)
+2. Check message_type enum
+3. If unknown type: log and ignore (or forward if routing)
+4. If known type but with new optional fields: ignore unknown fields
+5. Continue processing normally
+
+### Writing Messages:
+
+When sending to mixed-version network:
+1. Use lowest common denominator for critical fields
+2. Include version-specific features in optional fields
+3. Older nodes will ignore, newer nodes will use
+4. No compatibility breaks
+
+### Version Negotiation (Future):
+
+For major protocol changes:
+1. Nodes advertise supported version range during handshake
+2. Select highest mutually supported version
+3. Use that version for the connection
+4. Allow different connections to use different versions
+
+---
+
+## MessageType Enum Management
+
+### Current Enum (Phase 1):
+```
+enum MessageType {
+    PRIVATE_MESSAGE = 0;
+    BROADCAST = 1;
+    UPDATE_PACKAGE = 2;
+    QUERY = 3;
+    RESPONSE = 4;
+}
+```
+
+### Extended Enum (Phase 4):
+```
+enum MessageType {
+    PRIVATE_MESSAGE = 0;
+    BROADCAST = 1;
+    UPDATE_PACKAGE = 2;
+    QUERY = 3;
+    RESPONSE = 4;
+    ROUTE_ADVERTISEMENT = 5;
+    ACKNOWLEDGMENT = 6;
+}
+```
+
+### Full Enum (Phase 5):
+```
+enum MessageType {
+    PRIVATE_MESSAGE = 0;
+    BROADCAST = 1;
+    UPDATE_PACKAGE = 2;
+    QUERY = 3;
+    RESPONSE = 4;
+    ROUTE_ADVERTISEMENT = 5;
+    ACKNOWLEDGMENT = 6;
+    UPDATE_ANNOUNCEMENT = 7;
+    UPDATE_REQUEST = 8;
+    UPDATE_CHUNK = 9;
+}
+```
+
+---
+
+## Protocol Version Compatibility Matrix
+
+| Protocol Version | Phase | New Features | Compatible With |
+|-----------------|-------|--------------|-----------------|
+| 1.0 | 1-3 | Core messaging, TLS, peer discovery | All versions |
+| 1.1 | 4 | Routing, gossip, acknowledgments | 1.0+ (degrades gracefully) |
+| 1.2 | 5 | Update distribution, chunking | 1.0+ (degrades gracefully) |
+
+---
+
+## Recommendation: Define All Types Upfront
+
+**Best Practice**: Define all message types in Phase 1, even if implementation comes later.
+
+### Advantages:
+- **No schema churn**: Avoid rebuilding protobuf code multiple times
+- **Stable field numbers**: Prevent accidental reuse
+- **Better planning**: See full protocol structure upfront
+- **Easier testing**: Can write forward-compatibility tests early
+- **Cleaner git history**: One protobuf schema file, clear evolution
+
+### Implementation Approach:
+1. Add all message types to messages.proto in Phase 1
+2. Mark Phase 4/5 types with comments: "// Used in Phase 4"
+3. Implement handlers for each type in appropriate phase
+4. Build script generates all types from day one
+5. No breaking changes needed later
+
+### Alternative (Incremental):
+- Add message types as needed per phase
+- Requires protobuf recompilation each phase
+- Risk of field number conflicts
+- More complex version management
+
+**Recommended**: Define all types upfront (adds ~100 lines to messages.proto but saves integration headaches)
+
+---
+
+## Field Number Allocation Strategy
+
+### Reserve Ranges:
+
+Allocate field number ranges for future use:
+
+**BaseMessage** (field 1-50):
+- 1-10: Core fields (version, message_id, etc.) ✓ Used
+- 11-20: Reserved for future core extensions
+- 21-30: Reserved for metadata
+- 31-50: Reserved for future use
+
+**PrivateMessagePayload** (field 1-20):
+- 1-5: Current fields ✓ Used
+- 6-10: Reserved for encryption enhancements
+- 11-20: Reserved for future use
+
+Apply similar strategy to all message types.
+
+---
+
+## Deprecation Process
+
+When deprecating a field:
+
+1. Mark as deprecated in .proto:
+```
+string old_field_name = 5 [deprecated = true];
+```
+
+2. Add comment explaining why and alternative:
+```
+// Deprecated: Use new_field_name instead.
+// Will be removed in version 2.0.
+string old_field_name = 5 [deprecated = true];
+```
+
+3. Keep field in schema for compatibility
+4. Update documentation
+5. Emit warnings in code when used
+6. Plan removal for next major version
+
+---
+
+## Testing Strategy
+
+### Backward Compatibility Tests:
+
+1. **Old Message to New Node**:
+   - Serialize message with old schema
+   - Deserialize with new schema
+   - Verify all old fields present
+   - Verify new fields have defaults
+
+2. **New Message to Old Node**:
+   - Serialize message with new schema (all fields)
+   - Deserialize with old schema
+   - Verify core fields present
+   - Verify unknown fields ignored
+
+3. **Cross-Version Communication**:
+   - Spawn nodes with different protocol versions
+   - Exchange messages
+   - Verify graceful degradation
+
+### Version Negotiation Tests:
+
+1. Same version nodes communicate normally
+2. Different version nodes negotiate common version
+3. Incompatible versions reject connection
+4. Feature detection works correctly
+
+---
+
+## Migration Path for Breaking Changes
+
+If breaking changes are unavoidable (version 2.0):
+
+### Migration Strategy:
+
+1. **Announce early**: Give 6+ months notice
+2. **Dual-stack period**: Support both v1 and v2
+3. **Feature parity**: Ensure v2 has all v1 features
+4. **Migration tools**: Provide automated migration
+5. **Graceful fallback**: v2 nodes can talk to v1 nodes
+6. **Sunset plan**: Clear timeline for v1 deprecation
+
+### Implementation:
+
+1. Define v2 schema in new namespace: meshara.protocol.v2
+2. Nodes support both v1 and v2
+3. Negotiate version during handshake
+4. Use appropriate schema per connection
+5. Eventually deprecate v1
+
+---
+
+## Success Criteria
+
+Protocol versioning complete when:
+- All message types defined (even if unused yet)
+- Field numbers allocated with reserved ranges
+- Backward compatibility rules documented
+- Version negotiation strategy planned
+- Migration path for breaking changes defined
+- Tests verify cross-version compatibility
+- Documentation explains evolution strategy

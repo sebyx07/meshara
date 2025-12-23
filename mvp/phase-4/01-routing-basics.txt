@@ -267,6 +267,20 @@ fn increment_hop_count(message: &mut BaseMessage) {
 
 ---
 
+## Protocol Message Requirements
+
+**IMPORTANT**: This phase requires additional message types to be defined in proto/messages.proto:
+
+- **RouteAdvertisement**: For sharing known routes with peers
+- **RouteEntry**: Submessage for RouteAdvertisement entries
+- **Acknowledgment**: For reliable delivery confirmation
+
+These message types should be added to the protobuf schema (ideally in Phase 1, or at the start of Phase 4 before implementation).
+
+See phase-1/02-protocol-buffers.txt for the complete message definitions.
+
+---
+
 ## Route Discovery
 
 ### How to Learn Routes:

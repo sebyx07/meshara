@@ -124,6 +124,27 @@ Key components:
 
 ---
 
+## Protocol Evolution Across Phases
+
+**Note**: The Protocol Buffer schema evolves as phases progress:
+
+**Phase 1 - Core message types**:
+- BaseMessage, RoutingInfo
+- PrivateMessagePayload, BroadcastPayload
+- UpdatePackage, QueryMessage, ResponseMessage
+
+**Phase 4 - Routing additions**:
+- RouteAdvertisement, RouteEntry
+- Acknowledgment
+
+**Phase 5 - Update distribution additions**:
+- UpdateAnnouncement
+- UpdateRequest, UpdateChunk
+
+**Recommendation**: All message types should ideally be defined upfront in Phase 1 (see phase-1/02-protocol-buffers.txt) to avoid schema churn, but can be added incrementally as needed by each phase.
+
+---
+
 ## Development Approach per Phase
 
 Each phase follows this pattern:
