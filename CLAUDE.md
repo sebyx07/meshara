@@ -103,29 +103,31 @@ Follow TDD workflow for all new features and bug fixes:
 
 ### Pre-Commit Checklist
 
-Before committing any code, ensure ALL of the following pass:
+Before committing any code, ensure ALL of the following pass (in order for fast failure):
 
 ```bash
-# 1. All tests pass
+# 1. Code is formatted (fast check, fails early)
+cargo fmt --all -- --check
+
+# 2. All tests pass
 cargo test
 
-# 2. Linter passes with no warnings
-cargo clippy -- -D warnings
+# 3. Linter passes on all targets with no warnings
+cargo clippy --all-targets --all-features -- -D warnings
 
-# 3. No compiler warnings
+# 4. Build succeeds with all features
 cargo build --all-features
 
-# 4. Documentation compiles
+# 5. Documentation compiles without warnings
 cargo doc --no-deps --all-features
 
-# 5. Security audit passes
+# 6. Security audit passes (no known vulnerabilities)
 cargo audit
-
-# 6. Code is formatted
-cargo fmt -- --check
 ```
 
-**Never commit code that fails any of these checks.** This maintains code quality and prevents regressions from entering the codebase.
+**Never commit code that fails any of these checks.** This maintains code quality and prevents regressions.
+
+**Note**: The build script automatically formats generated protobuf code, so no manual intervention needed for `src/protocol/meshara.rs`.
 
 ## Architecture Overview
 
