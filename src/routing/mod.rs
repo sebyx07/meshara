@@ -24,12 +24,20 @@
 //! use meshara::network::ConnectionPool;
 //! use meshara::routing::Router;
 //! use std::sync::Arc;
+//! use rustls::{RootCertStore, ClientConfig};
 //!
 //! # async fn example() -> meshara::error::Result<()> {
 //! let identity = Identity::generate();
-//! let pool = Arc::new(ConnectionPool::new());
+//! let pool = Arc::new(ConnectionPool::new(100));
 //!
-//! let router = Router::new(identity, pool);
+//! let root_store = RootCertStore::empty();
+//! let tls_config = Arc::new(
+//!     ClientConfig::builder()
+//!         .with_root_certificates(root_store)
+//!         .with_no_client_auth()
+//! );
+//!
+//! let router = Router::new(identity, pool, tls_config);
 //!
 //! // Router is now ready to route messages
 //! # Ok(())

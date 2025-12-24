@@ -146,12 +146,19 @@
 //! let response = QueryResponse::success(&update_info).unwrap();
 //! ```
 
+mod application;
+mod distribution;
 mod keys;
 mod queries;
 mod trust;
 mod updates;
 
 // Re-export public APIs
+pub use application::{apply_update_safely, UpdateApplicator, UpdateConfig, UpdateEvent};
+pub use distribution::{
+    create_update_announcement, create_update_request, BandwidthLimiter, DownloadState,
+    UpdateCache, UpdateDownloader, UpdateId, CHUNK_SIZE, DEFAULT_MAX_CACHE_SIZE,
+};
 pub use keys::{AuthorityId, AuthorityIdentity, AuthorityMetadata};
 pub use queries::{generate_query_id, QueryEvent, QueryResponse, QueryType, UpdateInfo};
 pub use trust::{AuthorityTrustStore, TrustLevel, TrustedAuthority};

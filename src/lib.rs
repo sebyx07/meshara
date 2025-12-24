@@ -36,9 +36,12 @@ pub use api::{
     PrivacyLevel, SubscriptionHandle,
 };
 pub use authority::{
-    add_signature, generate_query_id, meets_version_requirement, verify_update_package,
-    AuthorityId, AuthorityIdentity, AuthorityMetadata, AuthorityTrustStore, QueryEvent,
-    QueryResponse, QueryType, TrustLevel, TrustedAuthority, UpdateInfo, UpdatePackageBuilder,
+    add_signature, apply_update_safely, create_update_announcement, create_update_request,
+    generate_query_id, meets_version_requirement, verify_update_package, AuthorityId,
+    AuthorityIdentity, AuthorityMetadata, AuthorityTrustStore, BandwidthLimiter, DownloadState,
+    QueryEvent, QueryResponse, QueryType, TrustLevel, TrustedAuthority, UpdateApplicator,
+    UpdateCache, UpdateConfig, UpdateDownloader, UpdateEvent, UpdateId, UpdateInfo,
+    UpdatePackageBuilder, CHUNK_SIZE, DEFAULT_MAX_CACHE_SIZE,
 };
 pub use crypto::{Identity, PublicKey};
 pub use error::{
