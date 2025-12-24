@@ -338,6 +338,55 @@ impl Connection {
     pub fn age(&self) -> std::time::Duration {
         self.created_at.elapsed()
     }
+
+    /// Send a ping to check if connection is alive
+    ///
+    /// Sends an empty message to verify the connection is still active.
+    /// This can be used for heartbeat/keep-alive functionality.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` if the connection is alive, error otherwise
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use meshara::network::Connection;
+    /// use std::time::Duration;
+    ///
+    /// async fn heartbeat_loop(conn: std::sync::Arc<Connection>) {
+    ///     let interval = Duration::from_secs(30);
+    ///
+    ///     loop {
+    ///         tokio::time::sleep(interval).await;
+    ///
+    ///         if conn.send_ping().await.is_err() {
+    ///             // Connection dead
+    ///             break;
+    ///         }
+    ///     }
+    /// }
+    /// ```
+    pub async fn send_ping(&self) -> Result<()> {
+        use crate::protocol::MessageType;
+
+        // Create a simple ping message (empty payload)
+        let ping_message = BaseMessage {
+            version: 1,
+            message_id: vec![0u8; 32], // Dummy message ID
+            message_type: MessageType::Ping as i32,
+            timestamp: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs() as i64,
+            sender_public_key: vec![], // Empty for ping
+            payload: vec![],           // Empty payload
+            signature: vec![],         // No signature needed for ping
+            routing_info: None,
+        };
+
+        self.send_message(&ping_message).await
+    }
 }
 
 /// Send a framed message (length prefix + data)

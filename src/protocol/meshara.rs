@@ -264,6 +264,10 @@ pub enum MessageType {
     UpdateRequest = 8,
     /// Update data chunk
     UpdateChunk = 9,
+    /// Phase 3: Peer discovery extensions
+    ///
+    /// Heartbeat / keep-alive message
+    Ping = 10,
 }
 impl MessageType {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -282,6 +286,7 @@ impl MessageType {
             Self::UpdateAnnouncement => "UPDATE_ANNOUNCEMENT",
             Self::UpdateRequest => "UPDATE_REQUEST",
             Self::UpdateChunk => "UPDATE_CHUNK",
+            Self::Ping => "PING",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -297,6 +302,7 @@ impl MessageType {
             "UPDATE_ANNOUNCEMENT" => Some(Self::UpdateAnnouncement),
             "UPDATE_REQUEST" => Some(Self::UpdateRequest),
             "UPDATE_CHUNK" => Some(Self::UpdateChunk),
+            "PING" => Some(Self::Ping),
             _ => None,
         }
     }

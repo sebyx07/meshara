@@ -5,10 +5,8 @@
 //! encrypted databases, cloud storage, etc.
 
 use crate::error::{Result, StorageError};
-use std::path::{Path, PathBuf};
-
-#[cfg(test)]
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 /// Trait for storage backend implementations
 ///
@@ -145,29 +143,28 @@ impl StorageBackend for FileSystemStorage {
 /// In-memory storage implementation for testing
 ///
 /// This is useful for unit tests and does not persist data to disk.
-#[cfg(test)]
 #[derive(Default)]
-pub struct InMemoryStorage {
-    data: HashMap<String, Vec<u8>>,
+pub struct MemoryStorage {
+    data: std::sync::Arc<std::sync::Mutex<HashMap<String, Vec<u8>>>>,
 }
 
-#[cfg(test)]
-impl InMemoryStorage {
+impl MemoryStorage {
     /// Create a new in-memory storage for testing
     pub fn new() -> Self {
         Self::default()
     }
 }
 
-#[cfg(test)]
-impl StorageBackend for InMemoryStorage {
+impl StorageBackend for MemoryStorage {
     fn save(&mut self, key: &str, value: &[u8]) -> Result<()> {
-        self.data.insert(key.to_string(), value.to_vec());
+        let mut data = self.data.lock().unwrap();
+        data.insert(key.to_string(), value.to_vec());
         Ok(())
     }
 
     fn load(&self, key: &str) -> Result<Vec<u8>> {
-        self.data.get(key).cloned().ok_or_else(|| {
+        let data = self.data.lock().unwrap();
+        data.get(key).cloned().ok_or_else(|| {
             StorageError::FileNotFound {
                 path: PathBuf::from(key),
             }
@@ -176,24 +173,26 @@ impl StorageBackend for InMemoryStorage {
     }
 
     fn exists(&self, key: &str) -> bool {
-        self.data.contains_key(key)
+        let data = self.data.lock().unwrap();
+        data.contains_key(key)
     }
 
     fn delete(&self, key: &str) -> Result<()> {
-        if !self.data.contains_key(key) {
-            return Err(StorageError::FileNotFound {
+        let mut data = self.data.lock().unwrap();
+        if data.remove(key).is_some() {
+            Ok(())
+        } else {
+            Err(StorageError::FileNotFound {
                 path: PathBuf::from(key),
             }
-            .into());
+            .into())
         }
-
-        // Note: We can't actually delete in this implementation without &mut self
-        // This is a limitation of the trait design. In a real implementation,
-        // we'd use interior mutability (RwLock, Mutex, etc.)
-
-        Ok(())
     }
 }
+
+/// Type alias for backward compatibility in tests
+#[cfg(test)]
+pub type InMemoryStorage = MemoryStorage;
 
 #[cfg(test)]
 mod tests {

@@ -533,6 +533,30 @@ pub enum NetworkError {
         /// Reason why receive failed
         reason: String,
     },
+
+    /// Peer discovery failed
+    ///
+    /// This occurs when peer discovery mechanism fails.
+    /// Can indicate mDNS service issues or network problems.
+    ///
+    /// This error MAY be retryable - discovery may succeed later.
+    #[error("Peer discovery failed: {reason}")]
+    DiscoveryFailed {
+        /// Reason why discovery failed
+        reason: String,
+    },
+
+    /// Invalid message format
+    ///
+    /// This occurs when a network message has invalid format.
+    /// Indicates protocol violation or corrupted data.
+    ///
+    /// This error is NOT retryable - message is invalid.
+    #[error("Invalid message format: {reason}")]
+    InvalidMessage {
+        /// Reason why message is invalid
+        reason: String,
+    },
 }
 
 impl From<std::io::Error> for StorageError {
@@ -800,6 +824,7 @@ impl MesharaError {
                     | NetworkError::ConnectionClosed { .. }
                     | NetworkError::ConnectionReset
                     | NetworkError::PeerUnreachable { .. }
+                    | NetworkError::DiscoveryFailed { .. }
             ),
 
             // Routing errors - some are retryable (route may be discovered)
@@ -887,6 +912,8 @@ impl MesharaError {
                 NetworkError::PeerUnreachable { .. } => "NETWORK_PEER_UNREACHABLE",
                 NetworkError::SendFailed { .. } => "NETWORK_SEND_FAILED",
                 NetworkError::ReceiveFailed { .. } => "NETWORK_RECEIVE_FAILED",
+                NetworkError::DiscoveryFailed { .. } => "NETWORK_DISCOVERY_FAILED",
+                NetworkError::InvalidMessage { .. } => "NETWORK_INVALID_MESSAGE",
             },
 
             // Routing error codes

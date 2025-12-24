@@ -50,7 +50,10 @@ enum MessageType {
     UPDATE_REQUEST = 8;      // Request for update chunk
     UPDATE_CHUNK = 9;        // Update data chunk
 
-    // Reserved 10-99 for future message types
+    // Phase 3: Peer discovery extensions
+    PING = 10;               // Heartbeat / keep-alive message
+
+    // Reserved 11-99 for future message types
 }
 
 // Routing information for multi-hop routing (Phase 1, used in Phase 4)

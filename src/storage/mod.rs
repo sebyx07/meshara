@@ -39,5 +39,5 @@ pub mod config;
 pub mod keystore;
 
 // Re-export commonly used types
-pub use backend::{FileSystemStorage, StorageBackend};
+pub use backend::{FileSystemStorage, MemoryStorage, StorageBackend};
 pub use config::{NetworkProfile, NodeConfig, PrivacyLevel};

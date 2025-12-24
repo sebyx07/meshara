@@ -99,6 +99,8 @@ pub fn is_message_type_supported(message_type: MessageType) -> bool {
             | MessageType::UpdatePackage
             | MessageType::Query
             | MessageType::Response
+            // Phase 3 types
+            | MessageType::Ping
             // Phase 4 types (defined but not yet implemented)
             | MessageType::RouteAdvertisement
             | MessageType::Acknowledgment
@@ -117,6 +119,7 @@ pub fn message_type_phase(message_type: MessageType) -> u32 {
         | MessageType::UpdatePackage
         | MessageType::Query
         | MessageType::Response => 1,
+        MessageType::Ping => 3,
         MessageType::RouteAdvertisement | MessageType::Acknowledgment => 4,
         MessageType::UpdateAnnouncement | MessageType::UpdateRequest | MessageType::UpdateChunk => {
             5

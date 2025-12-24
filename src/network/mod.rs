@@ -4,10 +4,16 @@
 //! It handles secure peer-to-peer connections using TLS 1.3.
 
 mod connection;
+mod discovery;
 mod tls;
 
 pub use connection::{Connection, ConnectionPool, ConnectionState};
+pub use discovery::{DiscoveryConfig, DiscoveryMethod, PeerAddress, PeerInfo, PeerStore};
 pub use tls::{TlsConfig, TlsListener};
+
+// Re-export mDNS discovery when local-discovery feature is enabled
+#[cfg(feature = "local-discovery")]
+pub use discovery::{mdns_discovery_loop, MdnsDiscovery};
 
 /// Maximum message size in bytes (16 MB)
 /// This prevents DoS attacks via oversized messages
