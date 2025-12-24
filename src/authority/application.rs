@@ -537,7 +537,7 @@ mod tests {
         // Count remaining backups
         let mut count = 0;
         let mut entries = fs::read_dir(&backup_dir).await.unwrap();
-        while let Some(_) = entries.next_entry().await.unwrap() {
+        while entries.next_entry().await.unwrap().is_some() {
             count += 1;
         }
 

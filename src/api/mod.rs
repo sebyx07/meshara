@@ -9,7 +9,8 @@ pub mod node;
 pub mod registry;
 
 // Re-export main types for convenience
+pub use crate::crypto::NodeId;
 pub use config::{NetworkProfile, NodeConfig, PrivacyLevel};
 pub use events::{Event, MessageId, SubscriptionHandle};
-pub use node::{Node, NodeBuilder, NodeId, NodeState};
+pub use node::{Node, NodeBuilder, NodeState};
 pub use registry::NodeRegistry;

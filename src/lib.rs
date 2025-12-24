@@ -43,7 +43,7 @@ pub use authority::{
     UpdateCache, UpdateConfig, UpdateDownloader, UpdateEvent, UpdateId, UpdateInfo,
     UpdatePackageBuilder, CHUNK_SIZE, DEFAULT_MAX_CACHE_SIZE,
 };
-pub use crypto::{Identity, PublicKey};
+pub use crypto::{hash_public_key, Identity, PublicKey};
 pub use error::{
     AuthorityError, ConfigError, CryptoError, MesharaError, NetworkError, ProtocolError, Result,
     RoutingError, StorageError,

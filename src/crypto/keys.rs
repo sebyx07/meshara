@@ -28,6 +28,23 @@ pub struct Identity {
     encryption_keypair: X25519StaticSecret,
 }
 
+impl Clone for Identity {
+    fn clone(&self) -> Self {
+        // Clone the signing keypair by converting to/from bytes
+        let signing_bytes = self.signing_keypair.to_bytes();
+        let signing_keypair = SigningKey::from_bytes(&signing_bytes);
+
+        // Clone the encryption keypair by converting to/from bytes
+        let encryption_bytes = self.encryption_keypair.to_bytes();
+        let encryption_keypair = X25519StaticSecret::from(encryption_bytes);
+
+        Self {
+            signing_keypair,
+            encryption_keypair,
+        }
+    }
+}
+
 impl Identity {
     /// Generate a new random identity
     ///

@@ -5,38 +5,24 @@
 
 use crate::api::config::{NetworkProfile, NodeConfig, PrivacyLevel};
 use crate::api::events::{Event, EventHandlers, MessageId, SubscriptionHandle};
-use crate::crypto::{Identity, PublicKey};
-use crate::error::ConfigError;
+use crate::crypto::{
+    decrypt_message, encrypt_for_recipient, hash_public_key, sign_message, verify_signature,
+    Identity, NodeId, PublicKey,
+};
+use crate::error::{ConfigError, NetworkError};
+use crate::network::{ConnectionPool, TlsConfig, TlsListener};
+use crate::protocol::{BaseMessage, BroadcastPayload, MessageType, PrivateMessagePayload};
+use crate::routing::{Router, RouterBuilder};
 use crate::storage::keystore::Keystore;
 use parking_lot::{Mutex, RwLock};
+use prost::Message as ProstMessage;
+use rustls::ClientConfig;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
-
-/// Unique identifier for a node based on its public key
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct NodeId([u8; 32]);
-
-impl NodeId {
-    /// Create a NodeId from a public key
-    ///
-    /// The NodeId is the Blake3 hash of the public key bytes.
-    pub fn from_public_key(public_key: &PublicKey) -> Self {
-        let bytes = public_key.to_bytes();
-        let hash = blake3::hash(&bytes);
-        Self(*hash.as_bytes())
-    }
-
-    /// Get the raw bytes of this node ID
-    pub fn as_bytes(&self) -> &[u8; 32] {
-        &self.0
-    }
-
-    /// Get a hexadecimal string representation
-    pub fn to_hex(&self) -> String {
-        self.0.iter().map(|b| format!("{:02x}", b)).collect()
-    }
-}
+use std::time::UNIX_EPOCH;
+use tokio::io::AsyncReadExt;
+use tokio::task::JoinHandle;
 
 /// Current operational state of a node
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -233,6 +219,11 @@ impl NodeBuilder {
             event_handlers: EventHandlers::new(),
             keystore,
             state: Arc::new(RwLock::new(NodeState::Created)),
+            router: Arc::new(RwLock::new(None)),
+            connection_pool: Arc::new(RwLock::new(None)),
+            tls_config: Arc::new(RwLock::new(None)),
+            listen_addr: Arc::new(RwLock::new(None)),
+            background_tasks: Arc::new(Mutex::new(Vec::new())),
             message_router: Arc::new(Mutex::new(None)),
         })
     }
@@ -285,6 +276,16 @@ pub struct Node {
     keystore: Keystore,
     /// Current operational state
     state: Arc<RwLock<NodeState>>,
+    /// Message router for network routing
+    router: Arc<RwLock<Option<Arc<Router>>>>,
+    /// Connection pool for peer connections
+    connection_pool: Arc<RwLock<Option<Arc<ConnectionPool>>>>,
+    /// TLS configuration
+    tls_config: Arc<RwLock<Option<Arc<ClientConfig>>>>,
+    /// Listen address (set when node starts)
+    listen_addr: Arc<RwLock<Option<SocketAddr>>>,
+    /// Background task handles
+    background_tasks: Arc<Mutex<Vec<JoinHandle<()>>>>,
     /// Message router (for in-memory message passing in Phase 2)
     message_router: Arc<Mutex<Option<Arc<dyn MessageRouter>>>>,
 }
@@ -346,6 +347,49 @@ impl Node {
             // Now take the write lock and set the identity
             *self.identity.write() = Some(loaded_identity);
         }
+
+        // Get identity (clone it to own it)
+        let identity = self
+            .identity
+            .read()
+            .as_ref()
+            .expect("Identity should be set")
+            .clone();
+
+        // Create full TLS configuration from identity
+        let node_tls_config = TlsConfig::from_identity(&identity)?;
+
+        // Create client config for outgoing connections
+        let client_cfg = node_tls_config.client_config();
+        *self.tls_config.write() = Some(Arc::clone(&client_cfg));
+
+        // Create connection pool
+        let pool = Arc::new(ConnectionPool::new(self.config.max_peers));
+        *self.connection_pool.write() = Some(Arc::clone(&pool));
+
+        // Create router
+        let router = Arc::new(
+            RouterBuilder::new()
+                .identity(identity.clone())
+                .connection_pool(Arc::clone(&pool))
+                .tls_config(Arc::clone(&client_cfg))
+                .build()?,
+        );
+        *self.router.write() = Some(router);
+
+        // Start listening for incoming connections
+        let listen_addr: SocketAddr = format!("0.0.0.0:{}", self.config.listen_port)
+            .parse()
+            .map_err(|e| ConfigError::MissingRequiredField {
+                field: format!("Invalid listen address: {}", e),
+            })?;
+
+        let listener = TlsListener::bind(listen_addr, node_tls_config.server_config()).await?;
+        let actual_addr = listener.local_addr()?;
+        *self.listen_addr.write() = Some(actual_addr);
+
+        // Start background task to accept connections (move listener into it)
+        self.spawn_accept_loop(listener);
 
         // Transition to Running
         *self.state.write() = NodeState::Running;
@@ -421,7 +465,7 @@ impl Node {
     ///
     /// Panics if the node hasn't been started yet.
     pub fn node_id(&self) -> NodeId {
-        NodeId::from_public_key(&self.public_key())
+        hash_public_key(&self.public_key())
     }
 
     /// Get a human-readable fingerprint for identity verification
@@ -431,6 +475,13 @@ impl Node {
     /// Panics if the node hasn't been started yet.
     pub fn fingerprint(&self) -> String {
         self.public_key().fingerprint()
+    }
+
+    /// Get the address the node is listening on
+    ///
+    /// Returns None if the node hasn't been started.
+    pub fn listen_address(&self) -> Option<SocketAddr> {
+        *self.listen_addr.read()
     }
 
     /// Export the node's identity encrypted with a passphrase
@@ -547,12 +598,57 @@ impl Node {
         // Generate message ID
         let message_id = MessageId::generate(content);
 
-        // Get sender public key
-        let sender = self.public_key();
-
-        // Phase 2: Route via in-memory router if available
+        // Try in-memory router first (for testing compatibility)
         if let Some(router) = self.message_router.lock().as_ref() {
+            let sender = self.public_key();
             router.route_private_message(recipient, sender, content.to_vec(), message_id)?;
+            return Ok(message_id);
+        }
+
+        // Prepare message (do all sync work before async routing)
+        let message = {
+            // Get our identity
+            let identity_guard = self.identity.read();
+            let identity = identity_guard.as_ref().expect("Node must be started");
+
+            // Encrypt message for recipient
+            let encrypted_msg = encrypt_for_recipient(identity, recipient, content)?;
+
+            // Create private message payload
+            let payload = PrivateMessagePayload {
+                content: encrypted_msg.ciphertext,
+                return_path: vec![], // TODO: Implement return path for onion routing
+                ephemeral_public_key: encrypted_msg.ephemeral_public_key.to_vec(),
+                nonce: encrypted_msg.nonce.to_vec(),
+            };
+
+            // Encode the payload
+            let payload_bytes = ProstMessage::encode_to_vec(&payload);
+
+            // Sign the payload
+            let signature = sign_message(identity, &payload_bytes);
+
+            // Create base message
+            BaseMessage {
+                version: 1,
+                message_id: message_id.as_bytes().to_vec(),
+                message_type: crate::protocol::MessageType::PrivateMessage.into(),
+                timestamp: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis() as i64,
+                sender_public_key: identity.public_key().to_bytes().to_vec(),
+                payload: payload_bytes,
+                signature: signature.to_bytes().to_vec(),
+                routing_info: None,
+            }
+        }; // Drop identity_guard here
+
+        // Get router (clone Arc to avoid holding lock across await)
+        let router_arc = self.router.read().clone();
+        if let Some(router) = router_arc {
+            let dest_node_id = hash_public_key(recipient);
+            router.route_message(&dest_node_id, message).await?;
         }
 
         Ok(message_id)
@@ -610,6 +706,237 @@ impl Node {
     }
 
     // ========================================================================
+    // Background Tasks
+    // ========================================================================
+
+    /// Spawn background task to accept incoming connections
+    fn spawn_accept_loop(&self, listener: TlsListener) {
+        let identity = Arc::clone(&self.identity);
+        let event_handlers = self.event_handlers.clone();
+        let state = Arc::clone(&self.state);
+
+        let handle = tokio::spawn(async move {
+            loop {
+                // Check if we should stop
+                {
+                    let state_guard = state.read();
+                    if *state_guard != NodeState::Running {
+                        break;
+                    }
+                }
+
+                // Accept connection
+                match listener.accept().await {
+                    Ok((stream, peer_addr)) => {
+                        tracing::debug!("Accepted connection from {}", peer_addr);
+
+                        // Spawn task to handle this connection
+                        let identity_clone = Arc::clone(&identity);
+                        let handlers_clone = event_handlers.clone();
+
+                        tokio::spawn(async move {
+                            if let Err(e) =
+                                Self::handle_connection(stream, identity_clone, handlers_clone)
+                                    .await
+                            {
+                                tracing::error!(
+                                    "Error handling connection from {}: {}",
+                                    peer_addr,
+                                    e
+                                );
+                            }
+                        });
+                    },
+                    Err(e) => {
+                        tracing::error!("Error accepting connection: {}", e);
+                        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                    },
+                }
+            }
+        });
+
+        self.background_tasks.lock().push(handle);
+    }
+
+    /// Handle an incoming TLS connection
+    async fn handle_connection(
+        mut stream: tokio_rustls::server::TlsStream<tokio::net::TcpStream>,
+        identity: Arc<RwLock<Option<Identity>>>,
+        event_handlers: EventHandlers,
+    ) -> crate::Result<()> {
+        // Read message length (4 bytes, big-endian)
+        let mut len_bytes = [0u8; 4];
+        stream
+            .read_exact(&mut len_bytes)
+            .await
+            .map_err(|e| NetworkError::ConnectionFailed {
+                address: "unknown".to_string(),
+                reason: format!("Failed to read message length: {}", e),
+            })?;
+
+        let msg_len = u32::from_be_bytes(len_bytes) as usize;
+
+        // Validate message size
+        if msg_len > crate::network::MAX_MESSAGE_SIZE {
+            return Err(NetworkError::InvalidMessage {
+                reason: format!("Message too large: {} bytes", msg_len),
+            }
+            .into());
+        }
+
+        // Read message data
+        let mut msg_bytes = vec![0u8; msg_len];
+        stream
+            .read_exact(&mut msg_bytes)
+            .await
+            .map_err(|e| NetworkError::ConnectionFailed {
+                address: "unknown".to_string(),
+                reason: format!("Failed to read message data: {}", e),
+            })?;
+
+        // Decode protobuf message
+        let base_msg =
+            BaseMessage::decode(&msg_bytes[..]).map_err(|e| NetworkError::InvalidMessage {
+                reason: format!("Failed to decode message: {}", e),
+            })?;
+
+        // Process the message
+        Self::process_received_message(base_msg, identity, event_handlers).await?;
+
+        Ok(())
+    }
+
+    /// Process a received message
+    async fn process_received_message(
+        message: BaseMessage,
+        identity: Arc<RwLock<Option<Identity>>>,
+        event_handlers: EventHandlers,
+    ) -> crate::Result<()> {
+        // Verify signature
+        if message.sender_public_key.len() != 64 {
+            return Err(NetworkError::InvalidMessage {
+                reason: "Invalid sender public key length".to_string(),
+            }
+            .into());
+        }
+        let mut sender_key_bytes = [0u8; 64];
+        sender_key_bytes.copy_from_slice(&message.sender_public_key);
+        let sender_pubkey = PublicKey::from_bytes(&sender_key_bytes)?;
+
+        if message.signature.len() != 64 {
+            return Err(NetworkError::InvalidMessage {
+                reason: "Invalid signature length".to_string(),
+            }
+            .into());
+        }
+        let mut sig_bytes = [0u8; 64];
+        sig_bytes.copy_from_slice(&message.signature);
+        let signature = crate::crypto::Signature::from_bytes(&sig_bytes)?;
+
+        if !verify_signature(&sender_pubkey, &message.payload, &signature) {
+            return Err(NetworkError::InvalidMessage {
+                reason: "Signature verification failed".to_string(),
+            }
+            .into());
+        }
+
+        // Get message ID
+        if message.message_id.len() != 32 {
+            return Err(NetworkError::InvalidMessage {
+                reason: "Invalid message ID length".to_string(),
+            }
+            .into());
+        }
+        let mut msg_id_bytes = [0u8; 32];
+        msg_id_bytes.copy_from_slice(&message.message_id);
+        let message_id = MessageId::from_bytes(msg_id_bytes);
+
+        // Process based on message type
+        match MessageType::try_from(message.message_type) {
+            Ok(MessageType::PrivateMessage) => {
+                // Decode private message payload
+                let payload = PrivateMessagePayload::decode(&message.payload[..]).map_err(|e| {
+                    NetworkError::InvalidMessage {
+                        reason: format!("Failed to decode private message: {}", e),
+                    }
+                })?;
+
+                // Decrypt message
+                let identity_guard = identity.read();
+                let node_identity =
+                    identity_guard
+                        .as_ref()
+                        .ok_or_else(|| NetworkError::InvalidMessage {
+                            reason: "Node identity not available".to_string(),
+                        })?;
+
+                // Create encrypted message structure
+                if payload.ephemeral_public_key.len() != 32 {
+                    return Err(NetworkError::InvalidMessage {
+                        reason: "Invalid ephemeral key length".to_string(),
+                    }
+                    .into());
+                }
+                if payload.nonce.len() != 12 {
+                    return Err(NetworkError::InvalidMessage {
+                        reason: "Invalid nonce length".to_string(),
+                    }
+                    .into());
+                }
+
+                let mut ephem_key = [0u8; 32];
+                ephem_key.copy_from_slice(&payload.ephemeral_public_key);
+
+                let mut nonce_bytes = [0u8; 12];
+                nonce_bytes.copy_from_slice(&payload.nonce);
+
+                let encrypted = crate::crypto::EncryptedMessage {
+                    ephemeral_public_key: ephem_key,
+                    nonce: nonce_bytes,
+                    ciphertext: payload.content,
+                };
+
+                let decrypted = decrypt_message(node_identity, &encrypted)?;
+
+                // Dispatch event
+                event_handlers.dispatch(Event::MessageReceived {
+                    message_id,
+                    sender: sender_pubkey,
+                    content: decrypted,
+                    timestamp: UNIX_EPOCH
+                        + std::time::Duration::from_millis(message.timestamp as u64),
+                    verified: true,
+                });
+            },
+            Ok(MessageType::Broadcast) => {
+                // Decode broadcast payload
+                let payload = BroadcastPayload::decode(&message.payload[..]).map_err(|e| {
+                    NetworkError::InvalidMessage {
+                        reason: format!("Failed to decode broadcast: {}", e),
+                    }
+                })?;
+
+                // Dispatch event
+                event_handlers.dispatch(Event::BroadcastReceived {
+                    message_id,
+                    sender: sender_pubkey,
+                    content: payload.content,
+                    content_type: payload.content_type,
+                    verified: true,
+                });
+            },
+            _ => {
+                tracing::warn!(
+                    "Received unsupported message type: {}",
+                    message.message_type
+                );
+            },
+        }
+
+        Ok(())
+    }
+
+    // ========================================================================
     // Internal Methods (for testing and in-memory routing)
     // ========================================================================
 
@@ -655,7 +982,7 @@ mod tests {
     fn test_node_id_from_public_key() {
         let identity = Identity::generate();
         let public_key = identity.public_key();
-        let node_id = NodeId::from_public_key(&public_key);
+        let node_id = hash_public_key(&public_key);
 
         assert_eq!(node_id.as_bytes().len(), 32);
         assert_eq!(node_id.to_hex().len(), 64);

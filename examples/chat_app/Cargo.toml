@@ -1,0 +1,44 @@
+[package]
+name = "meshara-chat"
+version = "0.1.0"
+edition = "2021"
+authors = ["sebi <sebastian@venom.is>"]
+license = "MIT"
+description = "Example chat application using Meshara library"
+
+[[bin]]
+name = "meshara-chat"
+path = "src/main.rs"
+
+[dependencies]
+# Meshara library (local path dependency)
+meshara = { path = "../..", features = ["default", "dht", "local-discovery"] }
+
+# Async runtime
+tokio = { version = "1.48", features = ["full"] }
+
+# CLI and terminal UI
+clap = { version = "4.5", features = ["derive"] }
+crossterm = "0.28"
+ratatui = "0.29"
+
+# Error handling
+anyhow = "1.0"
+thiserror = "2.0"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Utilities
+chrono = "0.4"
+directories = "6.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+hex = "0.4"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true

@@ -49,6 +49,12 @@ jobs:
       - name: Build examples
         run: cargo build --examples --verbose
 
+      - name: Test chat app example
+        run: |
+          cd examples/chat_app
+          cargo test --verbose
+          cargo build --release --verbose
+
       - name: Build with all features
         run: cargo build --all-features --verbose
 
