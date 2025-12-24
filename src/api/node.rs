@@ -328,21 +328,20 @@ impl Node {
 
         if needs_identity {
             // Try to load from storage
-            let loaded_identity =
-                match self.keystore.load_identity(&self.config.passphrase).await {
-                    Ok(loaded_identity) => loaded_identity,
-                    Err(_) => {
-                        // Generate new identity
-                        let new_identity = Identity::generate();
+            let loaded_identity = match self.keystore.load_identity(&self.config.passphrase).await {
+                Ok(loaded_identity) => loaded_identity,
+                Err(_) => {
+                    // Generate new identity
+                    let new_identity = Identity::generate();
 
-                        // Save to storage
-                        self.keystore
-                            .save_identity(&new_identity, &self.config.passphrase)
-                            .await?;
+                    // Save to storage
+                    self.keystore
+                        .save_identity(&new_identity, &self.config.passphrase)
+                        .await?;
 
-                        new_identity
-                    },
-                };
+                    new_identity
+                },
+            };
 
             // Now take the write lock and set the identity
             *self.identity.write() = Some(loaded_identity);

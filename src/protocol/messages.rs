@@ -25,22 +25,22 @@ fn convert_protocol_error(e: crate::protocol::ProtocolError, message_type: &str)
                 message_type: message_type.to_string(),
                 reason: msg,
             }
-        }
+        },
         crate::protocol::ProtocolError::DeserializationFailed(msg) => {
             ProtocolError::DeserializationFailed { reason: msg }
-        }
+        },
         crate::protocol::ProtocolError::MessageTooLarge(size, max) => {
             ProtocolError::SerializationFailed {
                 message_type: message_type.to_string(),
                 reason: format!("Message too large: {} bytes (max: {} bytes)", size, max),
             }
-        }
+        },
         crate::protocol::ProtocolError::InvalidFieldValue(msg) => {
             ProtocolError::InvalidFieldValue {
                 field: "unknown".to_string(),
                 reason: msg,
             }
-        }
+        },
         _ => ProtocolError::SerializationFailed {
             message_type: message_type.to_string(),
             reason: e.to_string(),
@@ -218,8 +218,8 @@ impl MessageParser {
     /// A ParsedMessage with decrypted content (if applicable) and verification status
     pub fn parse_message(&self, bytes: &[u8]) -> Result<ParsedMessage> {
         // 1. Deserialize BaseMessage
-        let base_message: BaseMessage = deserialize_message(bytes)
-            .map_err(|e| convert_protocol_error(e, "BaseMessage"))?;
+        let base_message: BaseMessage =
+            deserialize_message(bytes).map_err(|e| convert_protocol_error(e, "BaseMessage"))?;
 
         // 2. Validate structure
         validate_base_message(&base_message)
@@ -254,7 +254,7 @@ impl MessageParser {
         match message_type {
             MessageType::PrivateMessage => {
                 self.parse_private_message(&base_message, sender, verified)
-            }
+            },
             MessageType::Broadcast => self.parse_broadcast(&base_message, sender, verified),
             _ => Err(ProtocolError::InvalidMessageType {
                 got: base_message.message_type as u32,
@@ -269,11 +269,13 @@ impl MessageParser {
             return Ok(false);
         }
 
-        let signature_bytes: [u8; 64] = msg.signature.as_slice().try_into().map_err(|_| {
-            CryptoError::InvalidSignature {
-                context: "Invalid signature length".to_string(),
-            }
-        })?;
+        let signature_bytes: [u8; 64] =
+            msg.signature
+                .as_slice()
+                .try_into()
+                .map_err(|_| CryptoError::InvalidSignature {
+                    context: "Invalid signature length".to_string(),
+                })?;
 
         let signature = crate::crypto::Signature::from_bytes(&signature_bytes)?;
         let valid = verify_signature(sender, &msg.payload, &signature);
@@ -295,7 +297,10 @@ impl MessageParser {
         if payload.ephemeral_public_key.len() != 32 {
             return Err(ProtocolError::InvalidFieldValue {
                 field: "ephemeral_public_key".to_string(),
-                reason: format!("Expected 32 bytes, got {}", payload.ephemeral_public_key.len()),
+                reason: format!(
+                    "Expected 32 bytes, got {}",
+                    payload.ephemeral_public_key.len()
+                ),
             }
             .into());
         }
@@ -557,7 +562,7 @@ mod tests {
                 assert_eq!(decrypted_content, content);
                 assert_eq!(sender.to_bytes(), alice_pubkey.to_bytes());
                 assert!(verified);
-            }
+            },
             _ => panic!("Expected PrivateMessage"),
         }
     }
@@ -573,7 +578,9 @@ mod tests {
         let alice_builder = MessageBuilder::new(alice);
         let content = b"Public announcement";
         let content_type = "text/plain";
-        let msg = alice_builder.build_broadcast(content, content_type).unwrap();
+        let msg = alice_builder
+            .build_broadcast(content, content_type)
+            .unwrap();
 
         // Serialize
         let bytes = serialize_message(&msg).unwrap();
@@ -596,7 +603,7 @@ mod tests {
                 assert_eq!(ct, content_type);
                 assert_eq!(sender.to_bytes(), alice_pubkey.to_bytes());
                 assert!(verified);
-            }
+            },
             _ => panic!("Expected Broadcast"),
         }
     }
@@ -628,7 +635,7 @@ mod tests {
         match parsed {
             ParsedMessage::PrivateMessage { verified, .. } => {
                 assert!(!verified); // Signature should be invalid
-            }
+            },
             _ => panic!("Expected PrivateMessage"),
         }
     }
