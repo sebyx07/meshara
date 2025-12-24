@@ -557,6 +557,36 @@ pub enum NetworkError {
         /// Reason why message is invalid
         reason: String,
     },
+
+    /// Route not found to destination
+    ///
+    /// This occurs when no route exists to reach the destination node.
+    /// Can indicate destination is not reachable or routing table hasn't learned path yet.
+    ///
+    /// This error MAY be retryable - route may be learned later.
+    #[error("No route found to destination {destination:?}")]
+    RouteNotFound {
+        /// Destination node ID that has no route
+        destination: crate::crypto::NodeId,
+    },
+
+    /// Maximum hop count exceeded
+    ///
+    /// This occurs when a message has been forwarded too many times.
+    /// Prevents infinite routing loops in the network.
+    ///
+    /// This error is NOT retryable - message must be dropped.
+    #[error("Message exceeded maximum hop count")]
+    MaxHopsExceeded,
+
+    /// No peers available
+    ///
+    /// This occurs when an operation requires peers but none are connected.
+    /// Can indicate node is isolated or hasn't discovered peers yet.
+    ///
+    /// This error MAY be retryable - peers may connect later.
+    #[error("No peers available for operation")]
+    NoPeersAvailable,
 }
 
 impl From<std::io::Error> for StorageError {
@@ -914,6 +944,9 @@ impl MesharaError {
                 NetworkError::ReceiveFailed { .. } => "NETWORK_RECEIVE_FAILED",
                 NetworkError::DiscoveryFailed { .. } => "NETWORK_DISCOVERY_FAILED",
                 NetworkError::InvalidMessage { .. } => "NETWORK_INVALID_MESSAGE",
+                NetworkError::RouteNotFound { .. } => "NETWORK_ROUTE_NOT_FOUND",
+                NetworkError::MaxHopsExceeded => "NETWORK_MAX_HOPS_EXCEEDED",
+                NetworkError::NoPeersAvailable => "NETWORK_NO_PEERS_AVAILABLE",
             },
 
             // Routing error codes

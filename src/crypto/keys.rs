@@ -114,6 +114,24 @@ impl Identity {
         }
     }
 
+    /// Get the NodeId for this identity
+    ///
+    /// The NodeId is derived by hashing the public key with Blake3.
+    /// It serves as a stable identifier for routing and DHT operations.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use meshara::crypto::Identity;
+    ///
+    /// let identity = Identity::generate();
+    /// let node_id = identity.node_id();
+    /// println!("Node ID: {}", node_id);
+    /// ```
+    pub fn node_id(&self) -> crate::crypto::NodeId {
+        crate::crypto::hash_public_key(&self.public_key())
+    }
+
     /// Export the identity encrypted with a passphrase
     ///
     /// Uses Argon2 for key derivation and ChaCha20-Poly1305 for encryption.

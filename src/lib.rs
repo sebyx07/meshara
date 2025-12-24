@@ -40,3 +40,4 @@ pub use error::{
     AuthorityError, ConfigError, CryptoError, MesharaError, NetworkError, ProtocolError, Result,
     RoutingError, StorageError,
 };
+pub use routing::{GossipProtocol, Route, Router, RouterBuilder, RoutingTable};
