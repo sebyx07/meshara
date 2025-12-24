@@ -76,6 +76,9 @@ mod gossip;
 mod router;
 mod routing_table;
 
+#[cfg(feature = "dht")]
+mod dht;
+
 // Public exports
 pub use forwarding::{
     calculate_route_cost, handle_received_message, increment_hop_count, should_forward_message,
@@ -84,3 +87,6 @@ pub use forwarding::{
 pub use gossip::{EpidemicBroadcastTree, GossipProtocol};
 pub use router::{OutgoingMessage, Router, RouterBuilder};
 pub use routing_table::{Route, RoutingTable};
+
+#[cfg(feature = "dht")]
+pub use dht::{advertise_self, find_peer, ContactInfo, DhtHandle, DhtNode};

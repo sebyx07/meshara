@@ -204,12 +204,25 @@ mod tests {
     use crate::crypto::Identity;
     use crate::network::ConnectionPool;
     use crate::protocol::MessageType;
+    use rustls::ClientConfig;
+
+    fn create_test_tls_config() -> Arc<rustls::ClientConfig> {
+        use rustls::RootCertStore;
+
+        let root_store = RootCertStore::empty();
+        let config = ClientConfig::builder()
+            .with_root_certificates(root_store)
+            .with_no_client_auth();
+
+        Arc::new(config)
+    }
 
     #[tokio::test]
     async fn test_gossip_protocol_creation() {
         let identity = Identity::generate();
         let pool = Arc::new(ConnectionPool::new(100));
-        let router = Arc::new(Router::new(identity, pool));
+        let tls_config = create_test_tls_config();
+        let router = Arc::new(Router::new(identity, pool, tls_config));
 
         let gossip = GossipProtocol::new(Arc::clone(&router));
 
@@ -220,7 +233,8 @@ mod tests {
     async fn test_gossip_with_custom_fanout() {
         let identity = Identity::generate();
         let pool = Arc::new(ConnectionPool::new(100));
-        let router = Arc::new(Router::new(identity, pool));
+        let tls_config = create_test_tls_config();
+        let router = Arc::new(Router::new(identity, pool, tls_config));
 
         let gossip = GossipProtocol::with_fanout(Arc::clone(&router), 4);
 
@@ -231,7 +245,8 @@ mod tests {
     async fn test_mark_message_seen() {
         let identity = Identity::generate();
         let pool = Arc::new(ConnectionPool::new(100));
-        let router = Arc::new(Router::new(identity, pool));
+        let tls_config = create_test_tls_config();
+        let router = Arc::new(Router::new(identity, pool, tls_config));
 
         let gossip = GossipProtocol::new(Arc::clone(&router));
 
@@ -248,7 +263,8 @@ mod tests {
     async fn test_duplicate_broadcast_ignored() {
         let identity = Identity::generate();
         let pool = Arc::new(ConnectionPool::new(100));
-        let router = Arc::new(Router::new(identity, pool));
+        let tls_config = create_test_tls_config();
+        let router = Arc::new(Router::new(identity, pool, tls_config));
 
         let gossip = GossipProtocol::new(Arc::clone(&router));
 
@@ -265,7 +281,8 @@ mod tests {
     async fn test_handle_broadcast_deduplication() {
         let identity = Identity::generate();
         let pool = Arc::new(ConnectionPool::new(100));
-        let router = Arc::new(Router::new(identity, pool));
+        let tls_config = create_test_tls_config();
+        let router = Arc::new(Router::new(identity, pool, tls_config));
 
         let gossip = GossipProtocol::new(Arc::clone(&router));
 
@@ -296,7 +313,8 @@ mod tests {
     async fn test_reset_bloom_filter() {
         let identity = Identity::generate();
         let pool = Arc::new(ConnectionPool::new(100));
-        let router = Arc::new(Router::new(identity, pool));
+        let tls_config = create_test_tls_config();
+        let router = Arc::new(Router::new(identity, pool, tls_config));
 
         let gossip = GossipProtocol::new(Arc::clone(&router));
 
@@ -316,7 +334,8 @@ mod tests {
     async fn test_set_fanout() {
         let identity = Identity::generate();
         let pool = Arc::new(ConnectionPool::new(100));
-        let router = Arc::new(Router::new(identity, pool));
+        let tls_config = create_test_tls_config();
+        let router = Arc::new(Router::new(identity, pool, tls_config));
 
         let mut gossip = GossipProtocol::new(Arc::clone(&router));
 

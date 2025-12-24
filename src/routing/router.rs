@@ -9,9 +9,13 @@ use crate::network::ConnectionPool;
 use crate::protocol::{BaseMessage, RouteType, RoutingInfo};
 use crate::routing::routing_table::RoutingTable;
 use parking_lot::RwLock;
+use rustls::ClientConfig;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
+
+#[cfg(feature = "dht")]
+use crate::routing::dht::{find_peer, DhtHandle};
 
 /// Default maximum number of hops for routing
 const DEFAULT_MAX_HOPS: u32 = 8;
@@ -39,18 +43,34 @@ pub struct Router {
     routing_table: Arc<RwLock<RoutingTable>>,
 
     /// Connection pool to peers
-    _connection_pool: Arc<ConnectionPool>,
+    connection_pool: Arc<ConnectionPool>,
+
+    /// TLS configuration for establishing connections
+    tls_config: Arc<ClientConfig>,
 
     /// Channel for outgoing messages
     message_tx: mpsc::UnboundedSender<OutgoingMessage>,
 
     /// Background task handle
     _task_handle: Option<tokio::task::JoinHandle<()>>,
+
+    /// DHT handle for global peer discovery (optional)
+    #[cfg(feature = "dht")]
+    dht: Option<DhtHandle>,
 }
 
 impl Router {
     /// Create a new router
-    pub fn new(identity: Identity, connection_pool: Arc<ConnectionPool>) -> Self {
+    ///
+    /// # Arguments
+    /// * `identity` - This node's identity
+    /// * `connection_pool` - Pool for managing peer connections
+    /// * `tls_config` - TLS configuration for establishing new connections
+    pub fn new(
+        identity: Identity,
+        connection_pool: Arc<ConnectionPool>,
+        tls_config: Arc<ClientConfig>,
+    ) -> Self {
         let routing_table = Arc::new(RwLock::new(RoutingTable::new()));
         let (message_tx, message_rx) = mpsc::unbounded_channel();
 
@@ -64,9 +84,12 @@ impl Router {
         Self {
             identity,
             routing_table,
-            _connection_pool: connection_pool,
+            connection_pool,
+            tls_config,
             message_tx,
             _task_handle: Some(task_handle),
+            #[cfg(feature = "dht")]
+            dht: None,
         }
     }
 
@@ -100,22 +123,42 @@ impl Router {
             });
         }
 
-        // Try to find route
+        // Try to find route locally
         let route = {
             let table = self.routing_table.read();
             table.find_route(destination)
         };
 
         if let Some(route) = route {
-            // Found route, send via next hop
-            self.send_via_next_hop(&route.next_hop, message).await
-        } else {
-            // No route found
-            Err(NetworkError::RouteNotFound {
-                destination: *destination,
-            }
-            .into())
+            // Found local route, send via next hop
+            return self.send_via_next_hop(&route.next_hop, message).await;
         }
+
+        // No local route found - try DHT if available
+        #[cfg(feature = "dht")]
+        if let Some(ref dht) = self.dht {
+            if let Ok(Some(contact_info)) = find_peer(dht, destination).await {
+                // Found peer in DHT - try to connect directly
+                match self
+                    .connection_pool
+                    .get_or_connect(destination, contact_info.address, self.tls_config.clone())
+                    .await
+                {
+                    Ok(conn) => {
+                        return conn.send_message(&message).await;
+                    },
+                    Err(_) => {
+                        // Connection failed, fall through to error
+                    },
+                }
+            }
+        }
+
+        // No route found anywhere
+        Err(NetworkError::RouteNotFound {
+            destination: *destination,
+        }
+        .into())
     }
 
     /// Broadcast a message to all connected peers
@@ -284,12 +327,25 @@ impl Router {
     pub fn node_id(&self) -> NodeId {
         self.identity.node_id()
     }
+
+    /// Set the DHT handle for global peer discovery
+    #[cfg(feature = "dht")]
+    pub fn set_dht(&mut self, dht: DhtHandle) {
+        self.dht = Some(dht);
+    }
+
+    /// Get a reference to the DHT handle if available
+    #[cfg(feature = "dht")]
+    pub fn dht(&self) -> Option<&DhtHandle> {
+        self.dht.as_ref()
+    }
 }
 
 /// Builder for Router configuration
 pub struct RouterBuilder {
     identity: Option<Identity>,
     connection_pool: Option<Arc<ConnectionPool>>,
+    tls_config: Option<Arc<ClientConfig>>,
 }
 
 impl RouterBuilder {
@@ -298,6 +354,7 @@ impl RouterBuilder {
         Self {
             identity: None,
             connection_pool: None,
+            tls_config: None,
         }
     }
 
@@ -313,6 +370,12 @@ impl RouterBuilder {
         self
     }
 
+    /// Set the TLS configuration
+    pub fn tls_config(mut self, config: Arc<ClientConfig>) -> Self {
+        self.tls_config = Some(config);
+        self
+    }
+
     /// Build the router
     pub fn build(self) -> Result<Router> {
         let identity = self.identity.ok_or_else(|| NetworkError::InvalidMessage {
@@ -325,7 +388,13 @@ impl RouterBuilder {
                 reason: "Connection pool is required".to_string(),
             })?;
 
-        Ok(Router::new(identity, connection_pool))
+        let tls_config = self
+            .tls_config
+            .ok_or_else(|| NetworkError::InvalidMessage {
+                reason: "TLS config is required".to_string(),
+            })?;
+
+        Ok(Router::new(identity, connection_pool, tls_config))
     }
 }
 
@@ -340,13 +409,25 @@ mod tests {
     use super::*;
     use crate::protocol::MessageType;
 
+    fn create_test_tls_config() -> Arc<ClientConfig> {
+        use rustls::RootCertStore;
+
+        let root_store = RootCertStore::empty();
+        let config = ClientConfig::builder()
+            .with_root_certificates(root_store)
+            .with_no_client_auth();
+
+        Arc::new(config)
+    }
+
     #[tokio::test]
     async fn test_router_creation() {
         let identity = Identity::generate();
         let expected_node_id = identity.node_id();
         let pool = Arc::new(ConnectionPool::new(100));
+        let tls_config = create_test_tls_config();
 
-        let router = Router::new(identity, pool);
+        let router = Router::new(identity, pool, tls_config);
 
         assert_eq!(router.node_id(), expected_node_id);
     }
@@ -356,8 +437,9 @@ mod tests {
         let identity = Identity::generate();
         let self_node_id = identity.node_id();
         let pool = Arc::new(ConnectionPool::new(100));
+        let tls_config = create_test_tls_config();
 
-        let router = Router::new(identity, pool);
+        let router = Router::new(identity, pool, tls_config);
 
         let message = BaseMessage {
             version: 1,
@@ -378,8 +460,9 @@ mod tests {
     async fn test_route_not_found() {
         let identity = Identity::generate();
         let pool = Arc::new(ConnectionPool::new(100));
+        let tls_config = create_test_tls_config();
 
-        let router = Router::new(identity, pool);
+        let router = Router::new(identity, pool, tls_config);
 
         let destination = Identity::generate().node_id();
 
@@ -402,8 +485,9 @@ mod tests {
     async fn test_broadcast_no_peers() {
         let identity = Identity::generate();
         let pool = Arc::new(ConnectionPool::new(100));
+        let tls_config = create_test_tls_config();
 
-        let router = Router::new(identity, pool);
+        let router = Router::new(identity, pool, tls_config);
 
         let message = BaseMessage {
             version: 1,
@@ -425,10 +509,12 @@ mod tests {
         let identity = Identity::generate();
         let expected_node_id = identity.node_id();
         let pool = Arc::new(ConnectionPool::new(100));
+        let tls_config = create_test_tls_config();
 
         let router = RouterBuilder::new()
             .identity(identity)
             .connection_pool(pool)
+            .tls_config(tls_config)
             .build()
             .unwrap();
 

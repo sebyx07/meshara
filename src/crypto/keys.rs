@@ -384,6 +384,35 @@ pub struct PublicKey {
     encryption_key: X25519PublicKey,
 }
 
+impl PartialEq for PublicKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.to_bytes() == other.to_bytes()
+    }
+}
+
+impl Eq for PublicKey {}
+
+#[cfg(feature = "dht")]
+impl serde::Serialize for PublicKey {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_bytes(&self.to_bytes())
+    }
+}
+
+#[cfg(feature = "dht")]
+impl<'de> serde::Deserialize<'de> for PublicKey {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let bytes: Vec<u8> = serde::de::Deserialize::deserialize(deserializer)?;
+        PublicKey::from_bytes(&bytes).map_err(serde::de::Error::custom)
+    }
+}
+
 impl PublicKey {
     /// Get a human-readable fingerprint of this public key
     ///
