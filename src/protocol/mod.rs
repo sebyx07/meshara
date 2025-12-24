@@ -8,6 +8,8 @@
 #[allow(missing_docs)]
 mod meshara;
 
+pub mod versioning;
+
 use prost::Message;
 use thiserror::Error;
 
@@ -16,6 +18,12 @@ pub use meshara::{
     Acknowledgment, BaseMessage, BroadcastPayload, MessageType, PrivateMessagePayload,
     QueryMessage, ResponseCode, ResponseMessage, RouteAdvertisement, RouteEntry, RouteType,
     RoutingInfo, UpdateAnnouncement, UpdateChunk, UpdatePackage, UpdateRequest,
+};
+
+// Re-export versioning types and utilities
+pub use versioning::{
+    check_version_compatibility, is_message_type_supported, message_type_phase, validate_message,
+    MessageValidationResult, VersionCompatibility, PROTOCOL_VERSION as VERSIONING_PROTOCOL_VERSION,
 };
 
 /// Protocol-level errors

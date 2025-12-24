@@ -2,138 +2,213 @@ syntax = "proto3";
 
 package meshara;
 
-// Base message wrapper for all Meshara messages
+// Protocol version: 1.0 (MVP - Phases 1-5)
+// This file defines ALL message types upfront to prevent schema churn.
+// Message types are marked with the phase where they are first used.
+
+// Base message wrapper for all Meshara messages (Phase 1)
+// Field allocation strategy:
+// - 1-10: Core fields (used)
+// - 11-20: Reserved for future core extensions
+// - 21-30: Reserved for metadata extensions
+// - 31-50: Reserved for future use
 message BaseMessage {
-    uint32 version = 1;
-    bytes message_id = 2;
-    MessageType message_type = 3;
-    int64 timestamp = 4;
-    bytes sender_public_key = 5;
-    bytes payload = 6;
-    bytes signature = 7;
-    optional RoutingInfo routing_info = 8;
+    uint32 version = 1;              // Protocol version (currently 1)
+    bytes message_id = 2;             // Unique message identifier (16 bytes)
+    MessageType message_type = 3;     // Type of message payload
+    int64 timestamp = 4;              // Unix timestamp (milliseconds)
+    bytes sender_public_key = 5;      // Sender's Ed25519 public key (32 bytes)
+    bytes payload = 6;                // Serialized message payload
+    bytes signature = 7;              // Ed25519 signature (64 bytes)
+    optional RoutingInfo routing_info = 8; // Multi-hop routing information
+
+    // Reserved field ranges for future extensions
+    reserved 9, 10;                   // Reserved for additional core fields
+    reserved 11 to 20;                // Reserved for core extensions
+    reserved 21 to 30;                // Reserved for metadata
+    reserved 31 to 50;                // Reserved for future use
 }
 
 // Message type enumeration
+// Phase 1-3 types (0-4) are implemented in MVP core
+// Phase 4 types (5-6) add routing features
+// Phase 5 types (7-9) add update distribution features
 enum MessageType {
-    BROADCAST = 0;
-    PRIVATE_MESSAGE = 1;
-    UPDATE_PACKAGE = 2;
-    QUERY = 3;
-    RESPONSE = 4;
-    ROUTE_ADVERTISEMENT = 5;
-    ACKNOWLEDGMENT = 6;
-    UPDATE_ANNOUNCEMENT = 7;
-    UPDATE_REQUEST = 8;
-    UPDATE_CHUNK = 9;
+    // Phase 1-3: Core message types
+    BROADCAST = 0;           // Public broadcast message
+    PRIVATE_MESSAGE = 1;     // Encrypted private message
+    UPDATE_PACKAGE = 2;      // Signed software update
+    QUERY = 3;               // Query to authority node
+    RESPONSE = 4;            // Response from authority node
+
+    // Phase 4: Routing extensions
+    ROUTE_ADVERTISEMENT = 5; // Route discovery and sharing
+    ACKNOWLEDGMENT = 6;      // Message delivery confirmation
+
+    // Phase 5: Update distribution extensions
+    UPDATE_ANNOUNCEMENT = 7; // Lightweight update notification
+    UPDATE_REQUEST = 8;      // Request for update chunk
+    UPDATE_CHUNK = 9;        // Update data chunk
+
+    // Reserved 10-99 for future message types
 }
 
-// Routing information for multi-hop routing
+// Routing information for multi-hop routing (Phase 1, used in Phase 4)
+// Field allocation: 1-10 used, 11-20 reserved
 message RoutingInfo {
-    uint32 hop_count = 1;
-    uint32 max_hops = 2;
-    RouteType route_type = 3;
-    optional bytes next_hop = 4;
-    optional bytes onion_layers = 5;
+    uint32 hop_count = 1;               // Current hop count
+    uint32 max_hops = 2;                // Maximum allowed hops
+    RouteType route_type = 3;           // Type of routing
+    optional bytes next_hop = 4;        // Next hop node ID (32 bytes)
+    optional bytes onion_layers = 5;    // Encrypted onion routing layers
+
+    reserved 6 to 10;                   // Reserved for routing extensions
+    reserved 11 to 20;                  // Reserved for future use
 }
 
-// Route type enumeration
+// Route type enumeration (Phase 1, used in Phase 4)
 enum RouteType {
-    DIRECT = 0;
-    BRIDGE = 1;
-    ONION_ROUTED = 2;
+    DIRECT = 0;              // Direct connection to recipient
+    BRIDGE = 1;              // Routed through bridge node
+    ONION_ROUTED = 2;        // Multi-hop onion routing
+    // Reserved 3-9 for future route types
 }
 
-// Private message payload (encrypted)
+// Private message payload (encrypted) (Phase 1)
+// Field allocation: 1-5 used, 6-10 reserved for encryption, 11-20 reserved
 message PrivateMessagePayload {
-    bytes content = 1;
-    bytes return_path = 2;
-    bytes ephemeral_public_key = 3;
-    bytes nonce = 4;
+    bytes content = 1;                      // Encrypted message content
+    bytes return_path = 2;                  // Encrypted return routing info
+    bytes ephemeral_public_key = 3;         // X25519 ephemeral public key (32 bytes)
+    bytes nonce = 4;                        // ChaCha20-Poly1305 nonce (12 bytes)
+
+    reserved 5 to 10;                       // Reserved for encryption enhancements
+    reserved 11 to 20;                      // Reserved for future use
 }
 
-// Broadcast payload (signed, not encrypted)
+// Broadcast payload (signed, not encrypted) (Phase 1)
+// Field allocation: 1-5 used, 6-15 reserved
 message BroadcastPayload {
-    bytes content = 1;
-    string content_type = 2;
-    map<string, string> metadata = 3;
+    bytes content = 1;                      // Message content (plaintext)
+    string content_type = 2;                // MIME type (e.g., "text/plain", "application/json")
+    map<string, string> metadata = 3;       // Custom metadata key-value pairs
+
+    reserved 4 to 10;                       // Reserved for broadcast extensions
+    reserved 11 to 20;                      // Reserved for future use
 }
 
-// Update package (signed by authority)
+// Update package (signed by authority) (Phase 1)
+// Field allocation: 1-10 used, 11-20 reserved
 message UpdatePackage {
-    string version = 1;
-    bytes package_data = 2;
-    string changelog = 3;
-    bytes checksum = 4;
-    string required_version = 5;
-    repeated bytes signatures = 6;
-    repeated bytes authority_public_keys = 7;
+    string version = 1;                     // Semantic version (e.g., "1.2.3")
+    bytes package_data = 2;                 // Compressed update binary
+    string changelog = 3;                   // Human-readable changelog
+    bytes checksum = 4;                     // Blake3 hash of package_data
+    string required_version = 5;            // Minimum version required
+    repeated bytes signatures = 6;          // Ed25519 signatures (64 bytes each)
+    repeated bytes authority_public_keys = 7; // Authority public keys (32 bytes each)
+
+    reserved 8 to 10;                       // Reserved for update extensions
+    reserved 11 to 20;                      // Reserved for future use
 }
 
-// Query message
+// Query message (Phase 1)
+// Field allocation: 1-10 used, 11-20 reserved
 message QueryMessage {
-    bytes query_id = 1;
-    string query_type = 2;
-    bytes query_data = 3;
-    bool response_required = 4;
-    uint32 timeout_ms = 5;
+    bytes query_id = 1;                     // Unique query identifier (16 bytes)
+    string query_type = 2;                  // Query type (e.g., "peer_info", "update_check")
+    bytes query_data = 3;                   // Query parameters (serialized)
+    bool response_required = 4;             // Whether response is required
+    uint32 timeout_ms = 5;                  // Response timeout in milliseconds
+
+    reserved 6 to 10;                       // Reserved for query extensions
+    reserved 11 to 20;                      // Reserved for future use
 }
 
-// Response message
+// Response message (Phase 1)
+// Field allocation: 1-5 used, 6-15 reserved
 message ResponseMessage {
-    bytes query_id = 1;
-    bytes response_data = 2;
-    ResponseCode response_code = 3;
+    bytes query_id = 1;                     // Matching query identifier
+    bytes response_data = 2;                // Response payload (serialized)
+    ResponseCode response_code = 3;         // Response status code
+
+    reserved 4 to 10;                       // Reserved for response extensions
+    reserved 11 to 20;                      // Reserved for future use
 }
 
-// Response code enumeration
+// Response code enumeration (Phase 1)
 enum ResponseCode {
-    SUCCESS = 0;
-    NOT_FOUND = 1;
-    ERROR = 2;
-    TIMEOUT = 3;
-    UNAUTHORIZED = 4;
+    SUCCESS = 0;         // Query successful
+    NOT_FOUND = 1;       // Resource not found
+    ERROR = 2;           // Server error
+    TIMEOUT = 3;         // Query timed out
+    UNAUTHORIZED = 4;    // Not authorized
+    // Reserved 5-9 for future status codes
 }
 
 // Route advertisement for route discovery (Phase 4)
+// Field allocation: 1-5 used, 6-15 reserved
 message RouteAdvertisement {
-    repeated RouteEntry routes = 1;
+    repeated RouteEntry routes = 1;         // List of known routes
+
+    reserved 2 to 10;                       // Reserved for route discovery extensions
+    reserved 11 to 20;                      // Reserved for future use
 }
 
-// Route entry submessage
+// Route entry submessage (Phase 4)
+// Field allocation: 1-5 used, 6-15 reserved
 message RouteEntry {
-    bytes node_id = 1;
-    uint32 hop_count = 2;
-    int64 last_seen = 3;
+    bytes node_id = 1;                      // Node's public key (32 bytes)
+    uint32 hop_count = 2;                   // Hops to reach this node
+    int64 last_seen = 3;                    // Unix timestamp (milliseconds)
+
+    reserved 4 to 10;                       // Reserved for route entry extensions
+    reserved 11 to 20;                      // Reserved for future use
 }
 
 // Acknowledgment for reliable delivery (Phase 4)
+// Field allocation: 1-5 used, 6-15 reserved
 message Acknowledgment {
-    bytes message_id = 1;
-    bool success = 2;
-    optional string error_message = 3;
+    bytes message_id = 1;                   // ID of message being acknowledged
+    bool success = 2;                       // Whether delivery was successful
+    optional string error_message = 3;      // Error description if failed
+
+    reserved 4 to 10;                       // Reserved for acknowledgment extensions
+    reserved 11 to 20;                      // Reserved for future use
 }
 
 // Update announcement for update distribution (Phase 5)
+// Field allocation: 1-10 used, 11-20 reserved
 message UpdateAnnouncement {
-    string version = 1;
-    bytes update_id = 2;
-    uint64 size = 3;
-    bytes checksum = 4;
-    repeated bytes signatures = 5;
+    string version = 1;                     // Update version string
+    bytes update_id = 2;                    // Unique update identifier (16 bytes)
+    uint64 size = 3;                        // Total size in bytes
+    bytes checksum = 4;                     // Blake3 hash of complete update
+    repeated bytes signatures = 5;          // Authority signatures
+
+    reserved 6 to 10;                       // Reserved for announcement extensions
+    reserved 11 to 20;                      // Reserved for future use
 }
 
 // Update request for update distribution (Phase 5)
+// Field allocation: 1-5 used, 6-15 reserved
 message UpdateRequest {
-    bytes update_id = 1;
-    uint32 chunk_index = 2;
+    bytes update_id = 1;                    // Update being requested
+    uint32 chunk_index = 2;                 // Specific chunk index
+
+    reserved 3 to 10;                       // Reserved for request extensions
+    reserved 11 to 20;                      // Reserved for future use
 }
 
 // Update chunk for update distribution (Phase 5)
+// Field allocation: 1-10 used, 11-20 reserved
 message UpdateChunk {
-    bytes update_id = 1;
-    uint32 chunk_index = 2;
-    uint32 total_chunks = 3;
-    bytes data = 4;
-    bytes chunk_hash = 5;
+    bytes update_id = 1;                    // Update identifier
+    uint32 chunk_index = 2;                 // Current chunk index
+    uint32 total_chunks = 3;                // Total number of chunks
+    bytes data = 4;                         // Chunk data
+    bytes chunk_hash = 5;                   // Blake3 hash of this chunk
+
+    reserved 6 to 10;                       // Reserved for chunk extensions
+    reserved 11 to 20;                      // Reserved for future use
 }
