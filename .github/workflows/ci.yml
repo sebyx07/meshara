@@ -55,6 +55,12 @@ jobs:
           cargo test --verbose
           cargo build --release --verbose
 
+      - name: Test simple messaging example
+        run: |
+          cd examples/simple_messaging
+          cargo test --verbose
+          cargo build --release --verbose
+
       - name: Build with all features
         run: cargo build --all-features --verbose
 
