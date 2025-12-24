@@ -1,0 +1,502 @@
+# POST-MVP PHASE 4: OBSERVABILITY & MONITORING
+
+## Overview
+
+Production deployments require comprehensive observability: structured logging, metrics, distributed tracing, and alerting. Enable operators to understand system behavior, diagnose issues, and maintain SLAs.
+
+**Objective**: Full OpenTelemetry integration with dashboards, alerts, and runbooks.
+
+---
+
+## Three Pillars of Observability
+
+### 1. Logging (Structured)
+
+**Implementation with `tracing`**:
+```rust
+use tracing::{info, warn, error, debug, trace, instrument};
+
+#[instrument(skip(self))]
+pub async fn send_message(&self, recipient: &PublicKey, message: &[u8]) -> Result<MessageId, Error> {
+    debug!(
+        recipient = %hex::encode(recipient),
+        message_len = message.len(),
+        "Sending private message"
+    );
+
+    let msg_id = self.create_message(recipient, message)?;
+
+    info!(
+        message_id = %msg_id,
+        recipient = %hex::encode(recipient),
+        "Message created successfully"
+    );
+
+    match self.route_message(&msg_id).await {
+        Ok(()) => {
+            info!(message_id = %msg_id, "Message routed successfully");
+            Ok(msg_id)
+        }
+        Err(e) => {
+            error!(
+                message_id = %msg_id,
+                error = %e,
+                "Failed to route message"
+            );
+            Err(e)
+        }
+    }
+}
+```
+
+**Log Levels**:
+- **ERROR**: Failures requiring immediate attention
+- **WARN**: Degraded state, retryable errors
+- **INFO**: Important state changes, milestones
+- **DEBUG**: Detailed internal state (development)
+- **TRACE**: Very verbose (troubleshooting only)
+
+**Structured Logging Configuration**:
+```rust
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+
+fn init_logging() {
+    tracing_subscriber::registry()
+        .with(tracing_subscriber::EnvFilter::new(
+            std::env::var("RUST_LOG").unwrap_or_else(|_| "meshara=info".into()),
+        ))
+        .with(tracing_subscriber::fmt::layer().json())  // JSON output for log aggregation
+        .init();
+}
+```
+
+**Example JSON Log Output**:
+```json
+{
+  "timestamp": "2025-12-23T10:34:12.456Z",
+  "level": "INFO",
+  "target": "meshara::network",
+  "message": "Message routed successfully",
+  "message_id": "abc123...",
+  "recipient": "def456...",
+  "span": {
+    "name": "send_message",
+    "node_id": "node_0001"
+  }
+}
+```
+
+---
+
+### 2. Metrics (Prometheus)
+
+**Implementation**:
+```rust
+use prometheus::{
+    register_counter_vec, register_histogram_vec, register_gauge,
+    CounterVec, HistogramVec, Gauge,
+};
+
+lazy_static! {
+    static ref MESSAGES_SENT: CounterVec = register_counter_vec!(
+        "meshara_messages_sent_total",
+        "Total number of messages sent",
+        &["message_type"]
+    ).unwrap();
+
+    static ref MESSAGES_RECEIVED: CounterVec = register_counter_vec!(
+        "meshara_messages_received_total",
+        "Total number of messages received",
+        &["message_type"]
+    ).unwrap();
+
+    static ref MESSAGE_LATENCY: HistogramVec = register_histogram_vec!(
+        "meshara_message_latency_seconds",
+        "Message end-to-end latency",
+        &["message_type"],
+        vec![0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0, 5.0]
+    ).unwrap();
+
+    static ref CONNECTED_PEERS: Gauge = register_gauge!(
+        "meshara_connected_peers",
+        "Number of connected peers"
+    ).unwrap();
+
+    static ref ROUTING_TABLE_SIZE: Gauge = register_gauge!(
+        "meshara_routing_table_size",
+        "Number of routes in routing table"
+    ).unwrap();
+
+    static ref MESSAGE_QUEUE_SIZE: Gauge = register_gauge!(
+        "meshara_message_queue_size",
+        "Number of pending messages"
+    ).unwrap();
+}
+
+impl Node {
+    pub async fn send_message(&self, recipient: &PublicKey, message: &[u8]) -> Result<MessageId, Error> {
+        let timer = MESSAGE_LATENCY.with_label_values(&["private"]).start_timer();
+
+        let result = self.send_message_internal(recipient, message).await;
+
+        timer.observe_duration();
+
+        if result.is_ok() {
+            MESSAGES_SENT.with_label_values(&["private"]).inc();
+        }
+
+        result
+    }
+
+    pub fn update_metrics(&self) {
+        CONNECTED_PEERS.set(self.peer_count() as f64);
+        ROUTING_TABLE_SIZE.set(self.routing_table.len() as f64);
+        MESSAGE_QUEUE_SIZE.set(self.pending_messages() as f64);
+    }
+}
+```
+
+**Prometheus Exporter** (HTTP endpoint):
+```rust
+use prometheus::{Encoder, TextEncoder};
+use warp::Filter;
+
+pub async fn metrics_server() {
+    let metrics_route = warp::path("metrics").map(|| {
+        let encoder = TextEncoder::new();
+        let metric_families = prometheus::gather();
+        let mut buffer = vec![];
+        encoder.encode(&metric_families, &mut buffer).unwrap();
+        warp::reply::with_header(buffer, "Content-Type", encoder.format_type())
+    });
+
+    warp::serve(metrics_route).run(([0, 0, 0, 0], 9090)).await;
+}
+```
+
+**Key Metrics**:
+```
+# Messages
+meshara_messages_sent_total{message_type="private"} 1234
+meshara_messages_received_total{message_type="private"} 5678
+meshara_message_latency_seconds_bucket{message_type="private",le="0.05"} 1000
+meshara_message_latency_seconds_sum{message_type="private"} 45.67
+meshara_message_latency_seconds_count{message_type="private"} 1234
+
+# Network
+meshara_connected_peers 42
+meshara_routing_table_size 1024
+meshara_connection_errors_total 3
+
+# Resources
+meshara_memory_usage_bytes 145000000
+meshara_cpu_usage_percent 23.4
+```
+
+---
+
+### 3. Distributed Tracing (OpenTelemetry)
+
+**Implementation**:
+```rust
+use opentelemetry::{global, trace::{Tracer, Span, SpanKind}, Context};
+use opentelemetry_otlp::WithExportConfig;
+use tracing_opentelemetry::OpenTelemetryLayer;
+
+fn init_tracing() {
+    let tracer = opentelemetry_otlp::new_pipeline()
+        .tracing()
+        .with_exporter(
+            opentelemetry_otlp::new_exporter()
+                .tonic()
+                .with_endpoint("http://localhost:4317"),
+        )
+        .with_trace_config(
+            opentelemetry::sdk::trace::config()
+                .with_resource(opentelemetry::sdk::Resource::new(vec![
+                    opentelemetry::KeyValue::new("service.name", "meshara"),
+                ])),
+        )
+        .install_batch(opentelemetry::runtime::Tokio)
+        .unwrap();
+
+    tracing_subscriber::registry()
+        .with(OpenTelemetryLayer::new(tracer))
+        .init();
+}
+```
+
+**Tracing Example**:
+```rust
+#[instrument(skip(self))]
+pub async fn send_message(&self, recipient: &PublicKey, message: &[u8]) -> Result<MessageId, Error> {
+    let cx = Context::current();
+    let span = cx.span();
+
+    span.set_attribute(KeyValue::new("recipient", hex::encode(recipient)));
+    span.set_attribute(KeyValue::new("message_size", message.len() as i64));
+
+    // Trace through entire message flow
+    let msg_id = self.create_message(recipient, message)?;
+    span.set_attribute(KeyValue::new("message_id", msg_id.to_string()));
+
+    self.route_message(&msg_id).await?;
+
+    span.add_event("message_delivered", vec![]);
+
+    Ok(msg_id)
+}
+```
+
+**Trace Visualization** (Jaeger):
+```
+send_message [150ms]
+├─ create_message [10ms]
+│  ├─ encrypt [5ms]
+│  └─ sign [3ms]
+├─ route_message [130ms]
+│  ├─ find_route [20ms]
+│  │  └─ dht_lookup [15ms]
+│  └─ send_to_peer [100ms]
+│     ├─ tls_connect [80ms]
+│     └─ write_bytes [20ms]
+└─ ack_received [10ms]
+```
+
+---
+
+## Dashboards
+
+### Grafana Dashboard
+
+**Panels**:
+
+1. **Message Throughput** (Graph)
+   - Query: `rate(meshara_messages_sent_total[5m])`
+   - Shows messages/second over time
+
+2. **Message Latency** (Heatmap)
+   - Query: `meshara_message_latency_seconds`
+   - Shows latency distribution (p50, p95, p99)
+
+3. **Connected Peers** (Gauge)
+   - Query: `meshara_connected_peers`
+   - Shows current peer count with threshold alerts
+
+4. **Error Rate** (Graph)
+   - Query: `rate(meshara_errors_total[5m])`
+   - Shows errors/second by type
+
+5. **Resource Usage** (Multi-panel)
+   - Memory: `meshara_memory_usage_bytes`
+   - CPU: `meshara_cpu_usage_percent`
+   - Disk I/O: `meshara_disk_io_bytes_total`
+
+**Dashboard JSON** (dashboards/meshara.json):
+```json
+{
+  "dashboard": {
+    "title": "Meshara Network Overview",
+    "panels": [
+      {
+        "title": "Message Throughput",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "rate(meshara_messages_sent_total[5m])",
+            "legendFormat": "Sent - {{message_type}}"
+          },
+          {
+            "expr": "rate(meshara_messages_received_total[5m])",
+            "legendFormat": "Received - {{message_type}}"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+---
+
+## Alerting
+
+### Prometheus Alerts
+
+**alerts.yml**:
+```yaml
+groups:
+  - name: meshara_alerts
+    interval: 30s
+    rules:
+      - alert: HighMessageLatency
+        expr: histogram_quantile(0.99, rate(meshara_message_latency_seconds_bucket[5m])) > 1.0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High message latency detected"
+          description: "p99 latency is {{ $value }}s (threshold: 1s)"
+
+      - alert: NoPeersConnected
+        expr: meshara_connected_peers == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Node has no connected peers"
+          description: "Node {{ $labels.instance }} is isolated"
+
+      - alert: HighErrorRate
+        expr: rate(meshara_errors_total[5m]) > 10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High error rate detected"
+          description: "Error rate is {{ $value }} errors/sec"
+
+      - alert: MemoryExhaustion
+        expr: meshara_memory_usage_bytes > 1000000000  # 1GB
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Memory usage exceeds threshold"
+          description: "Memory usage is {{ $value | humanize }}B"
+```
+
+### Alert Routing (Alertmanager)
+
+**alertmanager.yml**:
+```yaml
+route:
+  group_by: ['alertname', 'cluster']
+  group_wait: 10s
+  group_interval: 5m
+  repeat_interval: 12h
+  receiver: 'team-pager'
+
+  routes:
+    - match:
+        severity: critical
+      receiver: 'team-pager'
+      continue: true
+
+    - match:
+        severity: warning
+      receiver: 'team-email'
+
+receivers:
+  - name: 'team-pager'
+    pagerduty_configs:
+      - service_key: '<pagerduty_key>'
+
+  - name: 'team-email'
+    email_configs:
+      - to: 'team@meshara.org'
+        from: 'alerts@meshara.org'
+```
+
+---
+
+## Logging Aggregation
+
+### Elasticsearch + Kibana (ELK Stack)
+
+**Filebeat Configuration** (filebeat.yml):
+```yaml
+filebeat.inputs:
+  - type: log
+    enabled: true
+    paths:
+      - /var/log/meshara/*.log
+    json.keys_under_root: true
+    json.add_error_key: true
+
+output.elasticsearch:
+  hosts: ["localhost:9200"]
+  index: "meshara-logs-%{+yyyy.MM.dd}"
+
+setup.kibana:
+  host: "localhost:5601"
+```
+
+**Kibana Saved Search**:
+- Filter: `level:ERROR` - Show only errors
+- Filter: `message_id:abc123...` - Trace specific message
+- Aggregation: Count by `span.name` - Most common operations
+
+---
+
+## Health Checks
+
+### HTTP Health Endpoint
+
+```rust
+use warp::Filter;
+
+pub async fn health_check_server(node: Arc<Node>) {
+    let health = warp::path("health").map(move || {
+        let status = node.health_status();
+
+        let response = serde_json::json!({
+            "status": status.state,
+            "uptime": status.uptime.as_secs(),
+            "connected_peers": status.connected_peers,
+            "pending_messages": status.pending_messages,
+            "memory_mb": status.memory_usage_mb,
+            "cpu_percent": status.cpu_usage_percent,
+        });
+
+        if status.state == HealthState::Healthy {
+            warp::reply::with_status(warp::reply::json(&response), warp::http::StatusCode::OK)
+        } else {
+            warp::reply::with_status(warp::reply::json(&response), warp::http::StatusCode::SERVICE_UNAVAILABLE)
+        }
+    });
+
+    warp::serve(health).run(([0, 0, 0, 0], 8080)).await;
+}
+```
+
+**Kubernetes Liveness/Readiness Probes**:
+```yaml
+livenessProbe:
+  httpGet:
+    path: /health
+    port: 8080
+  initialDelaySeconds: 10
+  periodSeconds: 10
+
+readinessProbe:
+  httpGet:
+    path: /ready
+    port: 8080
+  initialDelaySeconds: 5
+  periodSeconds: 5
+```
+
+---
+
+## Success Criteria
+
+**Observability Complete When**:
+- ✓ Structured JSON logging with tracing
+- ✓ Prometheus metrics exported on /metrics
+- ✓ OpenTelemetry distributed tracing working
+- ✓ Grafana dashboards created and documented
+- ✓ Prometheus alerts configured
+- ✓ Alertmanager routing to PagerDuty/email
+- ✓ ELK stack integration documented
+- ✓ Health check endpoints implemented
+- ✓ Runbooks for common alerts
+
+---
+
+**Last Updated**: 2025-12-23
+**Owner**: SRE Team
+**Status**: Planning
+**Prerequisites**: MVP complete, Phase 1-3 complete
+**Estimated Duration**: 6-8 weeks
+**Budget**: $60,000 - $80,000

@@ -1,0 +1,626 @@
+# POST-MVP PHASE 1: PERFORMANCE BENCHMARKING & OPTIMIZATION
+
+## Overview
+
+Production-ready library requires predictable, measured performance. Establish baselines, track regressions, and optimize critical paths to meet latency/throughput targets.
+
+**Objective**: Achieve <50ms p99 latency for message operations, >10,000 msg/sec throughput per node.
+
+---
+
+## Performance Targets
+
+### Latency Targets (Single Node)
+
+| Operation | p50 | p95 | p99 | p99.9 |
+|-----------|-----|-----|-----|-------|
+| **Message Creation** (sign + encrypt) | <1ms | <2ms | <5ms | <10ms |
+| **Message Verification** (decrypt + verify) | <1ms | <2ms | <5ms | <10ms |
+| **End-to-End Private Message** | <10ms | <20ms | <50ms | <100ms |
+| **Broadcast Propagation** (10 nodes) | <50ms | <100ms | <200ms | <500ms |
+| **Routing Table Lookup** | <100μs | <200μs | <500μs | <1ms |
+| **TLS Handshake** | <20ms | <50ms | <100ms | <200ms |
+| **DHT Lookup** (1000 nodes) | <100ms | <200ms | <500ms | <1s |
+
+### Throughput Targets
+
+| Metric | Target | Stretch Goal |
+|--------|--------|--------------|
+| **Messages per Second** (single node) | 10,000 msg/s | 50,000 msg/s |
+| **Network Throughput** (single node) | 100 MB/s | 1 GB/s |
+| **Concurrent Connections** | 1,000 | 10,000 |
+| **Routing Table Size** | 100,000 entries | 1,000,000 entries |
+| **Gossip Fanout** | 10 peers | 50 peers |
+
+### Resource Targets
+
+| Resource | Idle | Active (1000 msg/s) | Peak (10,000 msg/s) |
+|----------|------|---------------------|---------------------|
+| **Memory** (RSS) | <50 MB | <200 MB | <500 MB |
+| **CPU** (single core) | <1% | <30% | <80% |
+| **File Descriptors** | <100 | <1,000 | <10,000 |
+| **Network Bandwidth** | <1 KB/s | <10 MB/s | <100 MB/s |
+
+---
+
+## Benchmarking Infrastructure
+
+### Criterion.rs Setup
+
+**Cargo.toml**:
+```toml
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "crypto_benchmarks"
+harness = false
+
+[[bench]]
+name = "protocol_benchmarks"
+harness = false
+
+[[bench]]
+name = "end_to_end_benchmarks"
+harness = false
+```
+
+**Example Benchmark** (benches/crypto_benchmarks.rs):
+```rust
+use criterion::{black_box, criterion_group, criterion_main, Criterion, BenchmarkId, Throughput};
+use meshara::crypto::*;
+
+fn benchmark_signing(c: &mut Criterion) {
+    let identity = Identity::generate().unwrap();
+    let message = b"Hello, Meshara!";
+
+    c.bench_function("sign_message", |b| {
+        b.iter(|| {
+            identity.sign(black_box(message))
+        })
+    });
+}
+
+fn benchmark_encryption(c: &mut Criterion) {
+    let sender = Identity::generate().unwrap();
+    let recipient = Identity::generate().unwrap();
+
+    let mut group = c.benchmark_group("encryption");
+
+    for size in [1024, 10240, 102400, 1024000] {
+        let message = vec![0u8; size];
+        group.throughput(Throughput::Bytes(size as u64));
+
+        group.bench_with_input(BenchmarkId::from_parameter(size), &message, |b, msg| {
+            b.iter(|| {
+                encrypt_message(
+                    black_box(&sender),
+                    black_box(&recipient.public_key()),
+                    black_box(msg)
+                )
+            });
+        });
+    }
+
+    group.finish();
+}
+
+criterion_group!(benches, benchmark_signing, benchmark_encryption);
+criterion_main!(benches);
+```
+
+### Running Benchmarks
+
+**Local Execution**:
+```bash
+# Run all benchmarks
+cargo bench
+
+# Run specific benchmark
+cargo bench crypto_benchmarks
+
+# Generate flamegraph
+cargo flamegraph --bench crypto_benchmarks
+
+# Run with profiling
+cargo bench --bench crypto_benchmarks -- --profile-time=10
+```
+
+**CI/CD Integration** (.github/workflows/benchmarks.yml):
+```yaml
+name: Performance Benchmarks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Install Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          profile: minimal
+
+      - name: Run benchmarks
+        run: cargo bench --bench crypto_benchmarks -- --output-format bencher | tee output.txt
+
+      - name: Store benchmark result
+        uses: benchmark-action/github-action-benchmark@v1
+        with:
+          tool: 'cargo'
+          output-file-path: output.txt
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          auto-push: true
+          alert-threshold: '150%'
+          comment-on-alert: true
+          fail-on-alert: true
+```
+
+---
+
+## Profiling Tools
+
+### CPU Profiling
+
+**perf (Linux)**:
+```bash
+# Record CPU profile
+cargo build --release
+perf record --call-graph=dwarf ./target/release/benchmarks
+
+# Analyze profile
+perf report
+
+# Generate flamegraph
+perf script | stackcollapse-perf.pl | flamegraph.pl > flamegraph.svg
+```
+
+**cargo-flamegraph**:
+```bash
+# Install flamegraph
+cargo install flamegraph
+
+# Run with flamegraph
+cargo flamegraph --bench crypto_benchmarks
+
+# Open flamegraph.svg in browser
+```
+
+**Instruments (macOS)**:
+```bash
+# Build with debug symbols
+cargo build --release
+
+# Open in Instruments
+open -a Instruments target/release/meshara
+```
+
+### Memory Profiling
+
+**Valgrind (Massif)**:
+```bash
+# Install valgrind
+sudo apt-get install valgrind
+
+# Run memory profiler
+valgrind --tool=massif --massif-out-file=massif.out ./target/release/benchmark
+
+# Visualize memory usage
+ms_print massif.out
+```
+
+**Heaptrack**:
+```bash
+# Install heaptrack
+sudo apt-get install heaptrack
+
+# Profile heap allocations
+heaptrack ./target/release/benchmark
+
+# Analyze results
+heaptrack_gui heaptrack.benchmark.*.gz
+```
+
+**DHAT (Heap Profiler)**:
+```bash
+# Run DHAT profiler
+valgrind --tool=dhat ./target/release/benchmark
+
+# View report
+firefox dhat.out.html
+```
+
+### Async Profiling
+
+**tokio-console**:
+```toml
+[dependencies]
+console-subscriber = "0.2"
+```
+
+```rust
+// Enable tokio console
+#[tokio::main]
+async fn main() {
+    console_subscriber::init();
+    // Your async code
+}
+```
+
+```bash
+# Run tokio-console
+cargo install tokio-console
+tokio-console
+
+# Run application with console enabled
+cargo run --features tokio-console
+```
+
+---
+
+## Micro-Benchmarks
+
+### Cryptographic Operations
+
+**Target Benchmarks**:
+- Ed25519 sign: <10μs
+- Ed25519 verify: <30μs
+- X25519 key exchange: <50μs
+- ChaCha20-Poly1305 encrypt (1KB): <5μs
+- Blake3 hash (1KB): <2μs
+
+**Optimization Opportunities**:
+- Batch signature verification (ed25519-dalek batch API)
+- Parallel encryption for large payloads
+- Hardware acceleration (AES-NI, AVX2)
+
+### Protocol Buffer Operations
+
+**Target Benchmarks**:
+- Serialize BaseMessage (1KB): <5μs
+- Deserialize BaseMessage (1KB): <10μs
+- Validate message structure: <1μs
+
+**Optimization Opportunities**:
+- Use `prost` instead of `prost-types` (faster)
+- Pre-allocate buffers
+- Zero-copy deserialization where possible
+
+### Routing Operations
+
+**Target Benchmarks**:
+- Routing table lookup: <100ns
+- Insert new route: <1μs
+- Route selection (10 candidates): <500ns
+
+**Optimization Opportunities**:
+- Use `dashmap` for concurrent access
+- Cache frequently accessed routes
+- Lazy route computation
+
+---
+
+## Macro-Benchmarks
+
+### End-to-End Message Flow
+
+**Scenario**: Send 1000 private messages between two nodes.
+
+**Benchmark** (benches/end_to_end_benchmarks.rs):
+```rust
+use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use meshara::api::NodeBuilder;
+use tokio::runtime::Runtime;
+
+fn benchmark_private_messaging(c: &mut Criterion) {
+    let rt = Runtime::new().unwrap();
+
+    c.bench_function("send_1000_private_messages", |b| {
+        b.to_async(&rt).iter(|| async {
+            let sender = NodeBuilder::new().build().await.unwrap();
+            let recipient = NodeBuilder::new().build().await.unwrap();
+
+            for _ in 0..1000 {
+                sender.send_private_message(
+                    recipient.identity().public_key(),
+                    black_box(b"Hello, Meshara!")
+                ).await.unwrap();
+            }
+        });
+    });
+}
+
+criterion_group!(benches, benchmark_private_messaging);
+criterion_main!(benches);
+```
+
+**Performance Goals**:
+- 1000 messages in <1 second
+- <1ms average latency per message
+- Linear scaling with message count
+
+### Network Benchmarks
+
+**Scenarios**:
+1. **Connection Establishment**: 100 nodes connecting to each other
+2. **Message Broadcasting**: 1 node broadcasting to 100 peers
+3. **Multi-hop Routing**: Message routed through 5 hops
+4. **Large File Transfer**: 100MB file transferred
+
+**Tools**:
+- `iperf3` for raw network throughput
+- Custom network simulator (see below)
+
+---
+
+## Network Simulation
+
+### Simulated Network Testbed
+
+**Purpose**: Test performance under realistic network conditions.
+
+**Network Conditions**:
+- Latency: 10-200ms
+- Packet loss: 0-5%
+- Bandwidth limits: 1 Mbps - 1 Gbps
+- Jitter: 0-50ms
+
+**Linux tc (Traffic Control)**:
+```bash
+# Add latency
+sudo tc qdisc add dev eth0 root netem delay 50ms
+
+# Add packet loss
+sudo tc qdisc change dev eth0 root netem loss 1%
+
+# Add bandwidth limit
+sudo tc qdisc add dev eth0 root tbf rate 10mbit burst 32kbit latency 400ms
+
+# Reset
+sudo tc qdisc del dev eth0 root
+```
+
+**Toxiproxy** (Proxy-based network simulator):
+```bash
+# Install toxiproxy
+brew install toxiproxy
+
+# Start proxy
+toxiproxy-server
+
+# Add latency to connection
+toxiproxy-cli toxic add --type latency --toxicName latency_downstream \
+  --attribute latency=50 --attribute jitter=10 meshara_proxy
+```
+
+### Multi-Node Simulation
+
+**Test Scenarios**:
+1. **Small Network** (10 nodes): Latency baseline
+2. **Medium Network** (100 nodes): Routing efficiency
+3. **Large Network** (1000 nodes): Scalability limits
+4. **Churn Test**: Nodes joining/leaving dynamically
+5. **Partition Test**: Network split and heal
+
+**Example Simulation** (tests/simulation.rs):
+```rust
+use meshara::api::NodeBuilder;
+use tokio::time::{sleep, Duration};
+
+#[tokio::test]
+async fn simulate_100_node_network() {
+    let mut nodes = Vec::new();
+
+    // Create 100 nodes
+    for i in 0..100 {
+        let node = NodeBuilder::new()
+            .bind_address(format!("127.0.0.1:{}", 10000 + i))
+            .build()
+            .await
+            .unwrap();
+        nodes.push(node);
+    }
+
+    // Measure broadcast propagation time
+    let start = std::time::Instant::now();
+
+    nodes[0].broadcast(b"Hello, all nodes!").await.unwrap();
+
+    // Wait for all nodes to receive
+    sleep(Duration::from_secs(5)).await;
+
+    let elapsed = start.elapsed();
+    assert!(elapsed.as_millis() < 200, "Broadcast took too long: {:?}", elapsed);
+}
+```
+
+---
+
+## Optimization Strategies
+
+### Algorithmic Optimizations
+
+**Hot Path Identification**:
+```bash
+# Profile to find hot paths
+cargo flamegraph --bench crypto_benchmarks
+```
+
+**Common Optimizations**:
+1. **Reduce Allocations**: Use stack buffers, `Vec::with_capacity`
+2. **Avoid Clones**: Use references, `Cow<'_, [u8]>`
+3. **Batch Operations**: Batch signature verification, parallel processing
+4. **Caching**: Cache frequently accessed data (routing tables, keys)
+5. **Lazy Evaluation**: Defer expensive computations
+
+**Example Optimization**:
+
+Before:
+```rust
+pub fn process_messages(messages: Vec<Message>) -> Vec<Result<(), Error>> {
+    messages.iter()
+        .map(|msg| verify_and_decrypt(msg))
+        .collect()
+}
+```
+
+After (parallel processing):
+```rust
+use rayon::prelude::*;
+
+pub fn process_messages(messages: Vec<Message>) -> Vec<Result<(), Error>> {
+    messages.par_iter()
+        .map(|msg| verify_and_decrypt(msg))
+        .collect()
+}
+```
+
+### Async Optimizations
+
+**Tokio Runtime Tuning**:
+```rust
+#[tokio::main(flavor = "multi_thread", worker_threads = 8)]
+async fn main() {
+    // Multi-threaded runtime for CPU-bound work
+}
+```
+
+**Avoid Blocking in Async**:
+```rust
+// Bad: Blocks async executor
+async fn bad_example() {
+    std::thread::sleep(Duration::from_secs(1));
+}
+
+// Good: Use async sleep
+async fn good_example() {
+    tokio::time::sleep(Duration::from_secs(1)).await;
+}
+```
+
+**Use `spawn_blocking` for CPU-Heavy Tasks**:
+```rust
+async fn encrypt_large_file(data: Vec<u8>) -> Vec<u8> {
+    // Move CPU-intensive work to thread pool
+    tokio::task::spawn_blocking(move || {
+        encrypt(data)
+    }).await.unwrap()
+}
+```
+
+### Memory Optimizations
+
+**Reduce Memory Footprint**:
+- Use `SmallVec` for small vectors (stack allocation)
+- Use `Box<[u8]>` instead of `Vec<u8>` when size is fixed
+- Pool buffers for reuse (object pooling)
+
+**Example Buffer Pool**:
+```rust
+use crossbeam::channel::{bounded, Sender, Receiver};
+
+pub struct BufferPool {
+    sender: Sender<Vec<u8>>,
+    receiver: Receiver<Vec<u8>>,
+}
+
+impl BufferPool {
+    pub fn new(capacity: usize, buffer_size: usize) -> Self {
+        let (sender, receiver) = bounded(capacity);
+        for _ in 0..capacity {
+            sender.send(Vec::with_capacity(buffer_size)).unwrap();
+        }
+        BufferPool { sender, receiver }
+    }
+
+    pub fn acquire(&self) -> Vec<u8> {
+        self.receiver.try_recv().unwrap_or_else(|_| Vec::new())
+    }
+
+    pub fn release(&self, mut buffer: Vec<u8>) {
+        buffer.clear();
+        let _ = self.sender.try_send(buffer);
+    }
+}
+```
+
+---
+
+## Performance Regression Detection
+
+### Continuous Benchmarking
+
+**GitHub Action** (see CI/CD integration above):
+- Run benchmarks on every PR
+- Compare against baseline (main branch)
+- Fail if performance regresses >20%
+- Comment on PR with results
+
+**Benchmark Storage**:
+- Store historical results in git (gh-pages branch)
+- Track performance trends over time
+- Alert on sustained degradation
+
+### Performance Budget
+
+**Set Budgets**:
+- Binary size: <10 MB release build
+- Compilation time: <2 minutes clean build
+- Test execution: <30 seconds full suite
+- Benchmark stability: <5% variance
+
+**Enforce in CI**:
+```yaml
+- name: Check binary size
+  run: |
+    SIZE=$(stat -c%s target/release/libmeshara.so)
+    if [ $SIZE -gt 10485760 ]; then
+      echo "Binary too large: $SIZE bytes"
+      exit 1
+    fi
+```
+
+---
+
+## Success Criteria
+
+**Performance Benchmarking Complete When**:
+- ✓ Comprehensive benchmark suite (crypto, protocol, network, e2e)
+- ✓ All targets met (latency, throughput, resource usage)
+- ✓ CI/CD runs benchmarks on every PR with regression detection
+- ✓ Performance dashboard shows historical trends
+- ✓ Profiling tools integrated (flamegraph, heaptrack)
+- ✓ Network simulation tests 10/100/1000 node scenarios
+- ✓ Optimization guide documented
+
+**Key Metrics**:
+- <50ms p99 latency for message operations ✓
+- >10,000 msg/sec throughput per node ✓
+- <500MB memory usage at peak ✓
+- <80% CPU utilization at peak ✓
+- No performance regressions in CI ✓
+
+---
+
+## Resources
+
+- **Criterion.rs Documentation**: https://bheisler.github.io/criterion.rs/
+- **Rust Performance Book**: https://nnethercote.github.io/perf-book/
+- **Tokio Performance Tuning**: https://tokio.rs/tokio/topics/performance
+- **Flamegraph**: https://github.com/flamegraph-rs/flamegraph
+
+---
+
+**Last Updated**: 2025-12-23
+**Owner**: Performance Team
+**Status**: Planning
+**Prerequisites**: MVP complete
+**Estimated Duration**: 3-4 weeks
+**Budget**: $30,000 - $50,000

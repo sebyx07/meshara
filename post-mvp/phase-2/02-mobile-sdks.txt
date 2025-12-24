@@ -1,0 +1,731 @@
+# POST-MVP PHASE 2: MOBILE SDKs (Android & iOS)
+
+## Overview
+
+Bring Meshara to mobile platforms with native SDKs for Android (Kotlin/Java) and iOS (Swift/Objective-C). Enable secure messaging, software updates, and P2P communication on mobile devices.
+
+**Objective**: Production-ready mobile SDKs with native APIs and example apps.
+
+---
+
+## Architecture
+
+### Cross-Platform Core
+
+**Strategy**: Rust core library compiled to mobile targets via FFI.
+
+```
+┌─────────────────────────────────────────┐
+│         Application Layer               │
+│  (Kotlin/Swift - Platform-Specific UI)  │
+└─────────────────────────────────────────┘
+                  ↓
+┌─────────────────────────────────────────┐
+│       Native SDK Layer (FFI)            │
+│  (Kotlin/Swift wrappers around C FFI)   │
+└─────────────────────────────────────────┘
+                  ↓
+┌─────────────────────────────────────────┐
+│      Meshara Core (Rust + C FFI)        │
+│  (Compiled to libmeshara.so/.dylib)     │
+└─────────────────────────────────────────┘
+```
+
+**Benefits**:
+- Single codebase for crypto, protocol, networking
+- Platform-specific optimizations in SDK layer
+- Native developer experience (Kotlin/Swift)
+
+---
+
+## Android SDK
+
+### Build System
+
+**Target**: Android NDK (ARM64, ARMv7, x86_64)
+
+**Cargo.toml**:
+```toml
+[lib]
+name = "meshara"
+crate-type = ["cdylib", "staticlib"]
+
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21"
+android_logger = "0.13"
+```
+
+**Cross-Compilation**:
+```bash
+# Install Android targets
+rustup target add aarch64-linux-android
+rustup target add armv7-linux-androideabi
+rustup target add i686-linux-android
+rustup target add x86_64-linux-android
+
+# Build for Android
+cargo build --target aarch64-linux-android --release
+
+# Build all Android targets
+./scripts/build-android.sh
+```
+
+**build-android.sh**:
+```bash
+#!/bin/bash
+
+TARGETS=(
+    "aarch64-linux-android"
+    "armv7-linux-androideabi"
+    "i686-linux-android"
+    "x86_64-linux-android"
+)
+
+for TARGET in "${TARGETS[@]}"; do
+    echo "Building for $TARGET..."
+    cargo build --target $TARGET --release
+
+    # Copy to jniLibs
+    ARCH=$(echo $TARGET | cut -d'-' -f1)
+    mkdir -p android/app/src/main/jniLibs/$ARCH
+    cp target/$TARGET/release/libmeshara.so android/app/src/main/jniLibs/$ARCH/
+done
+```
+
+### JNI Bindings
+
+**C FFI Layer** (src/ffi/mod.rs):
+```rust
+use jni::JNIEnv;
+use jni::objects::{JClass, JString};
+use jni::sys::jstring;
+
+#[no_mangle]
+pub extern "C" fn Java_com_meshara_MesharaNode_createIdentity(
+    env: JNIEnv,
+    _class: JClass
+) -> jstring {
+    let identity = match Identity::generate() {
+        Ok(id) => id,
+        Err(_) => {
+            env.throw_new("java/lang/RuntimeException", "Failed to generate identity").ok();
+            return JString::default().into_raw();
+        }
+    };
+
+    let public_key = hex::encode(identity.public_key());
+    env.new_string(public_key).unwrap().into_raw()
+}
+
+#[no_mangle]
+pub extern "C" fn Java_com_meshara_MesharaNode_sendMessage(
+    env: JNIEnv,
+    _class: JClass,
+    recipient: JString,
+    message: JString
+) -> jboolean {
+    let recipient_str: String = env.get_string(recipient).unwrap().into();
+    let message_str: String = env.get_string(message).unwrap().into();
+
+    // Call Rust API
+    // ...
+
+    1  // true
+}
+```
+
+**Kotlin Wrapper** (android/src/main/kotlin/com/meshara/MesharaNode.kt):
+```kotlin
+package com.meshara
+
+class MesharaNode {
+    companion object {
+        init {
+            System.loadLibrary("meshara")
+        }
+
+        @JvmStatic
+        external fun createIdentity(): String
+
+        @JvmStatic
+        external fun sendMessage(recipient: String, message: String): Boolean
+    }
+
+    private var nodeHandle: Long = 0
+
+    fun start(config: NodeConfig): Result<Unit> {
+        nodeHandle = nativeStart(config.toJson())
+        return if (nodeHandle != 0L) Result.success(Unit) else Result.failure(Exception("Failed to start node"))
+    }
+
+    fun sendPrivateMessage(recipient: String, message: ByteArray): Result<MessageId> {
+        val msgId = nativeSendPrivateMessage(nodeHandle, recipient, message)
+        return if (msgId != null) Result.success(MessageId(msgId)) else Result.failure(Exception("Send failed"))
+    }
+
+    fun onMessageReceived(callback: (Message) -> Unit) {
+        nativeSetMessageCallback(nodeHandle, callback)
+    }
+
+    fun stop() {
+        nativeStop(nodeHandle)
+    }
+
+    private external fun nativeStart(configJson: String): Long
+    private external fun nativeSendPrivateMessage(handle: Long, recipient: String, message: ByteArray): String?
+    private external fun nativeSetMessageCallback(handle: Long, callback: (Message) -> Unit)
+    private external fun nativeStop(handle: Long)
+}
+
+data class NodeConfig(
+    val bindAddress: String = "0.0.0.0:0",
+    val storagePath: String,
+    val bootstrapNodes: List<String> = emptyList()
+) {
+    fun toJson(): String = """
+        {
+            "bind_address": "$bindAddress",
+            "storage_path": "$storagePath",
+            "bootstrap_nodes": [${bootstrapNodes.joinToString(",") { "\"$it\"" }}]
+        }
+    """.trimIndent()
+}
+
+data class Message(
+    val sender: String,
+    val content: ByteArray,
+    val timestamp: Long
+)
+
+data class MessageId(val id: String)
+```
+
+### Gradle Integration
+
+**android/build.gradle.kts**:
+```kotlin
+plugins {
+    id("com.android.library")
+    kotlin("android")
+}
+
+android {
+    compileSdk = 34
+
+    defaultConfig {
+        minSdk = 24
+        targetSdk = 34
+
+        ndk {
+            abiFilters.addAll(listOf("arm64-v8a", "armeabi-v7a", "x86_64", "x86"))
+        }
+    }
+
+    sourceSets {
+        getByName("main") {
+            jniLibs.srcDirs("src/main/jniLibs")
+        }
+    }
+}
+
+dependencies {
+    implementation("org.jetbrains.kotlin:kotlin-stdlib:1.9.0")
+    implementation("androidx.core:core-ktx:1.12.0")
+
+    // For coroutines support
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
+}
+
+// Task to build Rust library before Android build
+tasks.register<Exec>("buildRustLibrary") {
+    workingDir = file("../..")
+    commandLine = listOf("sh", "scripts/build-android.sh")
+}
+
+tasks.named("preBuild") {
+    dependsOn("buildRustLibrary")
+}
+```
+
+### Android-Specific Features
+
+**Background Service**:
+```kotlin
+class MesharaService : Service() {
+    private lateinit var node: MesharaNode
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        val config = NodeConfig(storagePath = filesDir.absolutePath)
+        node = MesharaNode()
+        node.start(config)
+
+        // Run in foreground to prevent termination
+        val notification = createNotification()
+        startForeground(NOTIFICATION_ID, notification)
+
+        return START_STICKY
+    }
+
+    override fun onDestroy() {
+        node.stop()
+        super.onDestroy()
+    }
+
+    override fun onBind(intent: Intent?): IBinder? = null
+
+    private fun createNotification(): Notification {
+        val channel = NotificationChannel(
+            CHANNEL_ID,
+            "Meshara Service",
+            NotificationManager.IMPORTANCE_LOW
+        )
+        val notificationManager = getSystemService(NotificationManager::class.java)
+        notificationManager.createNotificationChannel(channel)
+
+        return Notification.Builder(this, CHANNEL_ID)
+            .setContentTitle("Meshara")
+            .setContentText("P2P messaging active")
+            .setSmallIcon(R.drawable.ic_meshara)
+            .build()
+    }
+
+    companion object {
+        private const val CHANNEL_ID = "meshara_service"
+        private const val NOTIFICATION_ID = 1
+    }
+}
+```
+
+**Network Change Handling**:
+```kotlin
+class NetworkMonitor(private val context: Context, private val node: MesharaNode) {
+    private val connectivityManager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+
+    private val networkCallback = object : ConnectivityManager.NetworkCallback() {
+        override fun onAvailable(network: Network) {
+            node.onNetworkAvailable()
+        }
+
+        override fun onLost(network: Network) {
+            node.onNetworkLost()
+        }
+    }
+
+    fun start() {
+        val request = NetworkRequest.Builder()
+            .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            .build()
+        connectivityManager.registerNetworkCallback(request, networkCallback)
+    }
+
+    fun stop() {
+        connectivityManager.unregisterNetworkCallback(networkCallback)
+    }
+}
+```
+
+---
+
+## iOS SDK
+
+### Build System
+
+**Target**: iOS (ARM64), iOS Simulator (x86_64, ARM64)
+
+**Cross-Compilation**:
+```bash
+# Install iOS targets
+rustup target add aarch64-apple-ios
+rustup target add x86_64-apple-ios
+rustup target add aarch64-apple-ios-sim
+
+# Build for iOS
+cargo build --target aarch64-apple-ios --release
+
+# Build all iOS targets
+./scripts/build-ios.sh
+```
+
+**build-ios.sh**:
+```bash
+#!/bin/bash
+
+TARGETS=(
+    "aarch64-apple-ios"           # iOS devices
+    "x86_64-apple-ios"            # Simulator (Intel Macs)
+    "aarch64-apple-ios-sim"       # Simulator (Apple Silicon)
+)
+
+for TARGET in "${TARGETS[@]}"; do
+    echo "Building for $TARGET..."
+    cargo build --target $TARGET --release
+done
+
+# Create universal library for simulators
+lipo -create \
+    target/x86_64-apple-ios/release/libmeshara.a \
+    target/aarch64-apple-ios-sim/release/libmeshara.a \
+    -output target/libmeshara-sim.a
+
+# Create XCFramework
+xcodebuild -create-xcframework \
+    -library target/aarch64-apple-ios/release/libmeshara.a \
+    -library target/libmeshara-sim.a \
+    -output Meshara.xcframework
+```
+
+### Swift Bindings
+
+**C FFI Header** (generated by cbindgen):
+```c
+// meshara.h
+#ifndef MESHARA_H
+#define MESHARA_H
+
+#include <stdint.h>
+#include <stdbool.h>
+
+typedef struct MesharaNode MesharaNode;
+
+MesharaNode* meshara_node_create(const char* config_json);
+void meshara_node_destroy(MesharaNode* node);
+
+const char* meshara_node_send_message(
+    MesharaNode* node,
+    const char* recipient,
+    const uint8_t* message,
+    size_t message_len
+);
+
+void meshara_node_set_message_callback(
+    MesharaNode* node,
+    void (*callback)(const char* sender, const uint8_t* message, size_t len)
+);
+
+#endif // MESHARA_H
+```
+
+**Swift Wrapper** (Sources/Meshara/MesharaNode.swift):
+```swift
+import Foundation
+
+public class MesharaNode {
+    private var handle: OpaquePointer?
+    private var messageCallback: ((Message) -> Void)?
+
+    public init(config: NodeConfig) throws {
+        let configJson = try JSONEncoder().encode(config)
+        let configString = String(data: configJson, encoding: .utf8)!
+
+        guard let handle = meshara_node_create(configString) else {
+            throw MesharaError.initializationFailed
+        }
+
+        self.handle = handle
+        setupMessageCallback()
+    }
+
+    deinit {
+        if let handle = handle {
+            meshara_node_destroy(handle)
+        }
+    }
+
+    public func sendPrivateMessage(to recipient: String, message: Data) throws -> MessageId {
+        guard let handle = handle else {
+            throw MesharaError.nodeNotInitialized
+        }
+
+        let msgIdCString = message.withUnsafeBytes { ptr in
+            meshara_node_send_message(
+                handle,
+                recipient,
+                ptr.baseAddress?.assumingMemoryBound(to: UInt8.self),
+                message.count
+            )
+        }
+
+        guard let msgIdCString = msgIdCString else {
+            throw MesharaError.sendFailed
+        }
+
+        let msgId = String(cString: msgIdCString)
+        return MessageId(id: msgId)
+    }
+
+    public func onMessageReceived(_ callback: @escaping (Message) -> Void) {
+        self.messageCallback = callback
+    }
+
+    private func setupMessageCallback() {
+        let context = Unmanaged.passUnretained(self).toOpaque()
+
+        meshara_node_set_message_callback(handle) { sender, messagePtr, messageLen in
+            let senderStr = String(cString: sender!)
+            let messageData = Data(bytes: messagePtr!, count: messageLen)
+
+            let message = Message(
+                sender: senderStr,
+                content: messageData,
+                timestamp: Date()
+            )
+
+            // Call Swift callback
+            // (In real implementation, use context to get self)
+            // self.messageCallback?(message)
+        }
+    }
+}
+
+public struct NodeConfig: Codable {
+    public let bindAddress: String
+    public let storagePath: String
+    public let bootstrapNodes: [String]
+
+    public init(
+        bindAddress: String = "0.0.0.0:0",
+        storagePath: String,
+        bootstrapNodes: [String] = []
+    ) {
+        self.bindAddress = bindAddress
+        self.storagePath = storagePath
+        self.bootstrapNodes = bootstrapNodes
+    }
+}
+
+public struct Message {
+    public let sender: String
+    public let content: Data
+    public let timestamp: Date
+}
+
+public struct MessageId {
+    public let id: String
+}
+
+public enum MesharaError: Error {
+    case initializationFailed
+    case nodeNotInitialized
+    case sendFailed
+}
+```
+
+### Swift Package Manager
+
+**Package.swift**:
+```swift
+// swift-tools-version:5.9
+import PackageDescription
+
+let package = Package(
+    name: "Meshara",
+    platforms: [
+        .iOS(.v14),
+        .macOS(.v11)
+    ],
+    products: [
+        .library(
+            name: "Meshara",
+            targets: ["Meshara"]
+        ),
+    ],
+    targets: [
+        .binaryTarget(
+            name: "MesharaCore",
+            path: "Meshara.xcframework"
+        ),
+        .target(
+            name: "Meshara",
+            dependencies: ["MesharaCore"]
+        ),
+        .testTarget(
+            name: "MesharaTests",
+            dependencies: ["Meshara"]
+        ),
+    ]
+)
+```
+
+### iOS-Specific Features
+
+**Background Modes** (Info.plist):
+```xml
+<key>UIBackgroundModes</key>
+<array>
+    <string>fetch</string>
+    <string>processing</string>
+</array>
+```
+
+**Background Task Handling**:
+```swift
+import BackgroundTasks
+
+class MesharaBackgroundManager {
+    static let shared = MesharaBackgroundManager()
+
+    func registerBackgroundTasks() {
+        BGTaskScheduler.shared.register(
+            forTaskWithIdentifier: "com.meshara.refresh",
+            using: nil
+        ) { task in
+            self.handleRefresh(task: task as! BGAppRefreshTask)
+        }
+    }
+
+    func scheduleRefresh() {
+        let request = BGAppRefreshTaskRequest(identifier: "com.meshara.refresh")
+        request.earliestBeginDate = Date(timeIntervalSinceNow: 15 * 60)  // 15 minutes
+
+        try? BGTaskScheduler.shared.submit(request)
+    }
+
+    private func handleRefresh(task: BGAppRefreshTask) {
+        scheduleRefresh()  // Schedule next refresh
+
+        task.expirationHandler = {
+            // Clean up
+        }
+
+        // Process messages, sync state
+        Task {
+            await node.syncMessages()
+            task.setTaskCompleted(success: true)
+        }
+    }
+}
+```
+
+---
+
+## Example Apps
+
+### Android Chat App
+
+**MainActivity.kt**:
+```kotlin
+class MainActivity : AppCompatActivity() {
+    private lateinit var node: MesharaNode
+    private val messages = mutableListOf<Message>()
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setContentView(R.layout.activity_main)
+
+        val config = NodeConfig(
+            storagePath = filesDir.absolutePath,
+            bootstrapNodes = listOf("bootstrap.meshara.org:8000")
+        )
+
+        node = MesharaNode()
+        node.start(config)
+
+        node.onMessageReceived { message ->
+            runOnUiThread {
+                messages.add(message)
+                updateUI()
+            }
+        }
+
+        findViewById<Button>(R.id.sendButton).setOnClickListener {
+            val recipient = findViewById<EditText>(R.id.recipientInput).text.toString()
+            val message = findViewById<EditText>(R.id.messageInput).text.toString()
+
+            node.sendPrivateMessage(recipient, message.toByteArray())
+        }
+    }
+
+    override fun onDestroy() {
+        node.stop()
+        super.onDestroy()
+    }
+}
+```
+
+### iOS Chat App
+
+**ChatView.swift**:
+```swift
+import SwiftUI
+
+struct ChatView: View {
+    @StateObject private var viewModel = ChatViewModel()
+
+    var body: some View {
+        VStack {
+            ScrollView {
+                ForEach(viewModel.messages) { message in
+                    MessageRow(message: message)
+                }
+            }
+
+            HStack {
+                TextField("Message", text: $viewModel.inputText)
+                    .textFieldStyle(RoundedBorderTextFieldStyle())
+
+                Button("Send") {
+                    viewModel.sendMessage()
+                }
+            }
+            .padding()
+        }
+        .onAppear {
+            viewModel.start()
+        }
+    }
+}
+
+class ChatViewModel: ObservableObject {
+    @Published var messages: [Message] = []
+    @Published var inputText: String = ""
+
+    private var node: MesharaNode?
+
+    func start() {
+        let config = NodeConfig(
+            storagePath: FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].path,
+            bootstrapNodes: ["bootstrap.meshara.org:8000"]
+        )
+
+        node = try? MesharaNode(config: config)
+
+        node?.onMessageReceived { [weak self] message in
+            DispatchQueue.main.async {
+                self?.messages.append(message)
+            }
+        }
+    }
+
+    func sendMessage() {
+        guard let node = node, !inputText.isEmpty else { return }
+
+        let messageData = inputText.data(using: .utf8)!
+        try? node.sendPrivateMessage(to: "recipient_id", message: messageData)
+
+        inputText = ""
+    }
+}
+```
+
+---
+
+## Success Criteria
+
+**Mobile SDKs Complete When**:
+- ✓ Android SDK published to Maven Central
+- ✓ iOS SDK published via Swift Package Manager
+- ✓ Full API parity with Rust core
+- ✓ Example chat apps for Android and iOS
+- ✓ Background operation support
+- ✓ Network change handling
+- ✓ Documentation and tutorials
+- ✓ CI/CD builds SDKs automatically
+
+---
+
+**Last Updated**: 2025-12-23
+**Owner**: Mobile Team
+**Status**: Planning
+**Prerequisites**: MVP complete, Phase 1 complete
+**Estimated Duration**: 8-10 weeks
+**Budget**: $80,000 - $100,000

@@ -1,0 +1,492 @@
+# POST-MVP PHASE 2: ONION ROUTING IMPLEMENTATION
+
+## Overview
+
+Onion routing provides enhanced privacy by encrypting messages in layers and routing through multiple intermediate nodes. This prevents any single node from knowing both the source and destination.
+
+**Objective**: Implement 3+ hop onion routing for maximum privacy mode.
+
+---
+
+## Onion Routing Architecture
+
+### How Onion Routing Works
+
+**Standard Message Flow** (direct or single-hop):
+```
+Alice → Bob
+```
+Alice knows she's sending to Bob. Bob knows Alice sent the message.
+
+**Onion Routed Message Flow** (3 hops):
+```
+Alice → Node1 → Node2 → Node3 → Bob
+```
+- **Node1** knows: Alice sent something, forward to Node2
+- **Node2** knows: Node1 sent something, forward to Node3
+- **Node3** knows: Node2 sent something, deliver to Bob
+- **Bob** knows: Someone sent a message (not who)
+- **Alice** knows: She sent to Bob via 3 hops
+
+**Key Property**: No single intermediate node knows both sender and recipient.
+
+---
+
+## Protocol Design
+
+### Message Structure
+
+**Onion Message Format**:
+```protobuf
+message OnionMessage {
+  bytes encrypted_layer = 1;      // Encrypted next hop + inner message
+  bytes layer_hmac = 2;           // HMAC to verify layer integrity
+  uint32 hops_remaining = 3;      // Prevents infinite loops (encrypted in layer)
+}
+```
+
+**Layer Encryption**:
+```
+Layer 3 (innermost): Encrypt(Bob_PubKey, "DELIVER" || Final_Message)
+Layer 2:             Encrypt(Node3_PubKey, "FORWARD" || Node_Bob_Addr || Layer3)
+Layer 1:             Encrypt(Node2_PubKey, "FORWARD" || Node3_Addr || Layer2)
+Layer 0 (outermost): Encrypt(Node1_PubKey, "FORWARD" || Node2_Addr || Layer1)
+```
+
+Alice sends Layer 0 to Node1. Each node peels one layer.
+
+### Path Selection
+
+**Criteria for Relay Selection**:
+1. **Sufficient Bandwidth**: Node can handle traffic
+2. **Low Latency**: Not too slow
+3. **Geographic Diversity**: Avoid nodes in same jurisdiction
+4. **No Repeats**: Don't use same node twice in path
+5. **Trust Score**: Based on uptime, behavior
+6. **Guard Nodes**: First hop from small set of trusted nodes (like Tor)
+
+**Path Length**:
+- **Minimum**: 3 hops (security vs performance tradeoff)
+- **Default**: 3 hops
+- **Maximum**: 7 hops (diminishing privacy returns, increased latency)
+
+**Guard Node Strategy**:
+```rust
+pub struct CircuitBuilder {
+    guard_nodes: Vec<NodeId>,      // Small set of long-lived entry nodes
+    relay_pool: Vec<NodeId>,       // General relay pool
+    exit_pool: Vec<NodeId>,        // Exit-capable nodes
+}
+
+impl CircuitBuilder {
+    pub fn select_path(&self, destination: &NodeId) -> Result<Vec<NodeId>, Error> {
+        // 1. Select entry (guard) node
+        let entry = self.select_guard_node()?;
+
+        // 2. Select middle relay(s)
+        let middle1 = self.select_relay_excluding(&[&entry])?;
+        let middle2 = self.select_relay_excluding(&[&entry, &middle1])?;
+
+        // 3. Destination is final hop
+        Ok(vec![entry, middle1, middle2, *destination])
+    }
+
+    fn select_guard_node(&self) -> Result<NodeId, Error> {
+        // Prefer sticky guard nodes for consistency
+        self.guard_nodes.choose(&mut rand::thread_rng())
+            .cloned()
+            .ok_or(Error::NoGuardNodesAvailable)
+    }
+
+    fn select_relay_excluding(&self, exclude: &[&NodeId]) -> Result<NodeId, Error> {
+        self.relay_pool.iter()
+            .filter(|n| !exclude.contains(&n))
+            .choose(&mut rand::thread_rng())
+            .cloned()
+            .ok_or(Error::NoRelaysAvailable)
+    }
+}
+```
+
+---
+
+## Implementation
+
+### Circuit Construction
+
+**Step-by-Step Circuit Build**:
+1. Alice selects path: [Node1, Node2, Node3, Bob]
+2. Alice creates shared secret with each hop using X25519 key exchange
+3. Alice encrypts layers from inside out
+4. Alice sends onion message to Node1
+
+**Code Example**:
+```rust
+pub struct OnionCircuit {
+    path: Vec<NodeId>,
+    layer_keys: Vec<[u8; 32]>,  // Shared secret with each hop
+}
+
+impl OnionCircuit {
+    pub async fn build(path: Vec<NodeId>) -> Result<Self, Error> {
+        let mut layer_keys = Vec::new();
+
+        // Establish shared secret with each hop
+        for node_id in &path {
+            let node_pubkey = lookup_public_key(node_id).await?;
+            let ephemeral_keypair = EphemeralKeypair::generate();
+            let shared_secret = ephemeral_keypair.diffie_hellman(&node_pubkey);
+            layer_keys.push(shared_secret);
+        }
+
+        Ok(OnionCircuit { path, layer_keys })
+    }
+
+    pub fn wrap_message(&self, payload: &[u8]) -> Result<Vec<u8>, Error> {
+        let mut onion = payload.to_vec();
+
+        // Encrypt from innermost to outermost layer
+        for (i, key) in self.layer_keys.iter().enumerate().rev() {
+            let next_hop = if i < self.path.len() - 1 {
+                Some(&self.path[i + 1])
+            } else {
+                None  // Final hop
+            };
+
+            onion = self.encrypt_layer(key, next_hop, &onion)?;
+        }
+
+        Ok(onion)
+    }
+
+    fn encrypt_layer(&self, key: &[u8; 32], next_hop: Option<&NodeId>, inner: &[u8]) -> Result<Vec<u8>, Error> {
+        // Create layer: [next_hop (optional) | inner_message]
+        let mut layer = Vec::new();
+
+        if let Some(hop) = next_hop {
+            layer.extend_from_slice(hop.as_bytes());
+        }
+        layer.extend_from_slice(inner);
+
+        // Encrypt layer
+        let cipher = ChaCha20Poly1305::new(key.into());
+        let nonce = generate_nonce();
+        cipher.encrypt(&nonce, layer.as_ref())
+            .map_err(|_| Error::EncryptionFailed)
+    }
+}
+```
+
+### Relay Message Processing
+
+**Relay Node Logic**:
+```rust
+impl Node {
+    async fn handle_onion_message(&self, onion: OnionMessage) -> Result<(), Error> {
+        // Decrypt outer layer
+        let (next_hop, inner_message) = self.peel_layer(&onion)?;
+
+        match next_hop {
+            Some(hop) => {
+                // Forward to next hop
+                self.forward_message(&hop, &inner_message).await?;
+            }
+            None => {
+                // Final destination, deliver message
+                self.deliver_message(&inner_message).await?;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn peel_layer(&self, onion: &OnionMessage) -> Result<(Option<NodeId>, Vec<u8>), Error> {
+        // Decrypt outer layer with our private key
+        let decrypted = self.identity.decrypt(&onion.encrypted_layer)?;
+
+        // Parse: [next_hop (32 bytes) | inner_message]
+        if decrypted.len() > 32 {
+            let next_hop = NodeId::from_bytes(&decrypted[..32])?;
+            let inner = decrypted[32..].to_vec();
+            Ok((Some(next_hop), inner))
+        } else {
+            // No next hop, this is final destination
+            Ok((None, decrypted))
+        }
+    }
+}
+```
+
+---
+
+## Traffic Analysis Resistance
+
+### Timing Attack Mitigation
+
+**Problem**: Variable latency leaks information about path length.
+
+**Solution**: Add random delays, constant-time processing.
+
+```rust
+pub struct RelayConfig {
+    min_relay_delay: Duration,  // Minimum delay before forwarding
+    max_relay_delay: Duration,  // Maximum random delay
+}
+
+impl Node {
+    async fn relay_with_delay(&self, message: &[u8], next_hop: &NodeId) {
+        // Add random delay to prevent timing analysis
+        let delay = rand::thread_rng()
+            .gen_range(self.config.min_relay_delay..=self.config.max_relay_delay);
+
+        tokio::time::sleep(delay).await;
+
+        // Forward message
+        self.send_to(next_hop, message).await;
+    }
+}
+```
+
+### Padding
+
+**Problem**: Message size leaks information.
+
+**Solution**: Pad all onion messages to fixed size.
+
+```rust
+const ONION_MESSAGE_SIZE: usize = 8192;  // Fixed 8KB messages
+
+pub fn pad_message(msg: &[u8]) -> Result<Vec<u8>, Error> {
+    if msg.len() > ONION_MESSAGE_SIZE {
+        return Err(Error::MessageTooLarge);
+    }
+
+    let mut padded = msg.to_vec();
+    padded.resize(ONION_MESSAGE_SIZE, 0);
+    Ok(padded)
+}
+
+pub fn unpad_message(padded: &[u8]) -> Vec<u8> {
+    // Remove trailing zeros (simple padding scheme)
+    padded.iter()
+        .rposition(|&b| b != 0)
+        .map(|pos| padded[..=pos].to_vec())
+        .unwrap_or_default()
+}
+```
+
+### Cover Traffic
+
+**Purpose**: Send dummy messages to hide real traffic patterns.
+
+```rust
+pub struct CoverTrafficGenerator {
+    send_interval: Duration,
+    enabled: bool,
+}
+
+impl CoverTrafficGenerator {
+    pub async fn run(&self, node: &Node) {
+        while self.enabled {
+            // Send dummy message through random circuit
+            let dummy = self.generate_dummy_message();
+            node.send_onion(dummy).await.ok();
+
+            tokio::time::sleep(self.send_interval).await;
+        }
+    }
+
+    fn generate_dummy_message(&self) -> Vec<u8> {
+        // Random data, indistinguishable from real messages
+        let mut rng = rand::thread_rng();
+        (0..ONION_MESSAGE_SIZE)
+            .map(|_| rng.gen())
+            .collect()
+    }
+}
+```
+
+---
+
+## Circuit Management
+
+### Circuit Lifetime
+
+**Problem**: Long-lived circuits enable correlation attacks.
+
+**Solution**: Rotate circuits periodically.
+
+```rust
+pub struct CircuitManager {
+    circuits: HashMap<CircuitId, OnionCircuit>,
+    circuit_lifetime: Duration,
+}
+
+impl CircuitManager {
+    pub async fn maintain_circuits(&mut self) {
+        loop {
+            // Remove expired circuits
+            let now = Instant::now();
+            self.circuits.retain(|_, circuit| {
+                now.duration_since(circuit.created_at) < self.circuit_lifetime
+            });
+
+            // Build new circuits proactively
+            while self.circuits.len() < self.target_circuit_count {
+                if let Ok(circuit) = self.build_new_circuit().await {
+                    self.circuits.insert(circuit.id, circuit);
+                }
+            }
+
+            tokio::time::sleep(Duration::from_secs(60)).await;
+        }
+    }
+}
+```
+
+### Circuit Failures
+
+**Handling Relay Failures**:
+```rust
+impl CircuitManager {
+    pub async fn send_onion(&self, msg: &[u8]) -> Result<(), Error> {
+        // Try circuits in order of health
+        for circuit_id in self.healthy_circuits() {
+            match self.send_via_circuit(circuit_id, msg).await {
+                Ok(()) => return Ok(()),
+                Err(Error::CircuitFailed) => {
+                    // Mark circuit as failed, try next
+                    self.mark_failed(circuit_id);
+                    continue;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+
+        Err(Error::NoHealthyCircuits)
+    }
+}
+```
+
+---
+
+## Performance Considerations
+
+### Latency
+
+**Expected Latency**:
+- 3-hop circuit: ~150-300ms added latency
+- 5-hop circuit: ~300-500ms added latency
+
+**Optimization**: Pre-build circuits to avoid setup latency on send.
+
+### Throughput
+
+**Challenge**: Onion routing reduces throughput due to:
+- Encryption overhead (multiple layers)
+- Relay processing delay
+- Fixed message size padding
+
+**Mitigation**: Stream multiplexing, concurrent circuits.
+
+---
+
+## Security Analysis
+
+### Threat Model
+
+**What Onion Routing Protects Against**:
+- ✓ Traffic analysis (correlating sender/receiver)
+- ✓ ISP surveillance (ISP sees encrypted traffic to first hop)
+- ✓ Compromised intermediate nodes (can't see endpoints)
+- ✓ Network-level censorship
+
+**What Onion Routing Does NOT Protect Against**:
+- ✗ Global passive adversary (can correlate all traffic)
+- ✗ Timing correlation (with sufficient statistical data)
+- ✗ Compromised endpoints (sender/receiver)
+- ✗ Malicious exit nodes (can see final plaintext)
+
+### Attack Scenarios
+
+**Scenario 1: Compromised Relay**
+
+Attacker controls Node2 in path [Node1, Node2, Node3, Bob].
+
+- **Sees**: Traffic from Node1 to Node3
+- **Cannot see**: Original sender (Alice) or final recipient (Bob)
+- **Mitigation**: Multiple hops prevent single-node compromise
+
+**Scenario 2: Timing Correlation**
+
+Attacker observes timing of messages entering and exiting network.
+
+- **Attack**: Correlate patterns (e.g., 10 messages/minute from Alice matches 10 messages/minute to Bob)
+- **Mitigation**: Random delays, cover traffic, batching
+
+**Scenario 3: Sybil Attack**
+
+Attacker runs many relay nodes to increase probability of controlling path.
+
+- **Attack**: If attacker runs 30% of relays, probability of controlling 3-hop path: 0.3³ = 2.7%
+- **Mitigation**: Guard nodes, relay selection based on trust
+
+---
+
+## Testing
+
+### Onion Routing Tests
+
+```rust
+#[tokio::test]
+async fn test_3_hop_onion_routing() {
+    // Create 5-node network
+    let nodes = create_test_network(5).await;
+
+    // Alice (nodes[0]) sends to Bob (nodes[4]) via 3 hops
+    let path = vec![
+        nodes[1].id(),  // Relay 1
+        nodes[2].id(),  // Relay 2
+        nodes[3].id(),  // Relay 3
+        nodes[4].id(),  // Bob
+    ];
+
+    let circuit = OnionCircuit::build(path).await.unwrap();
+    let onion = circuit.wrap_message(b"Secret message").unwrap();
+
+    nodes[0].send_onion(onion).await.unwrap();
+
+    // Wait for delivery
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    // Verify Bob received message
+    assert!(nodes[4].has_received(b"Secret message"));
+
+    // Verify intermediate nodes don't know sender/recipient
+    assert!(!nodes[1].knows_sender_of_last_message());
+    assert!(!nodes[2].knows_recipient_of_last_message());
+}
+```
+
+---
+
+## Success Criteria
+
+**Onion Routing Complete When**:
+- ✓ 3-hop onion routing working end-to-end
+- ✓ Circuit construction <500ms
+- ✓ Message latency <300ms for 3-hop circuit
+- ✓ Traffic analysis resistance (padding, delays, cover traffic)
+- ✓ Circuit rotation every 10 minutes
+- ✓ Graceful handling of relay failures
+- ✓ Security analysis completed
+- ✓ Documentation and examples
+
+---
+
+**Last Updated**: 2025-12-23
+**Owner**: Privacy Team
+**Status**: Planning
+**Prerequisites**: MVP complete, Phase 1 security hardening
+**Estimated Duration**: 6-8 weeks
+**Budget**: $60,000 - $80,000

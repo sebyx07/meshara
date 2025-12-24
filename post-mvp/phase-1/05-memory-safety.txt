@@ -1,0 +1,524 @@
+# POST-MVP PHASE 1: MEMORY SAFETY & LEAK DETECTION
+
+## Overview
+
+While Rust provides memory safety guarantees, unsafe code, FFI, and resource leaks still require careful validation. Ensure no memory leaks, use-after-free, or unsafe behavior in production.
+
+**Objective**: Zero memory leaks, safe handling of all sensitive data, validated unsafe code.
+
+---
+
+## Memory Leak Detection
+
+### Valgrind Memcheck
+
+**Purpose**: Detect memory leaks, invalid accesses, uninitialized memory.
+
+**Setup**:
+```bash
+# Install valgrind
+sudo apt-get install valgrind
+
+# Run with leak detection
+valgrind --leak-check=full \
+         --show-leak-kinds=all \
+         --track-origins=yes \
+         --verbose \
+         --log-file=valgrind.log \
+         ./target/debug/meshara_test
+```
+
+**Interpretation**:
+```
+==12345== HEAP SUMMARY:
+==12345==     in use at exit: 0 bytes in 0 blocks
+==12345==   total heap usage: 1,234 allocs, 1,234 frees, 1,234,567 bytes allocated
+==12345==
+==12345== All heap blocks were freed -- no leaks are possible
+```
+
+**CI Integration** (.github/workflows/memory-check.yml):
+```yaml
+name: Memory Leak Detection
+
+on: [push, pull_request]
+
+jobs:
+  valgrind:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Install Valgrind
+        run: sudo apt-get update && sudo apt-get install -y valgrind
+
+      - name: Build tests
+        run: cargo build --tests
+
+      - name: Run Valgrind
+        run: |
+          valgrind --leak-check=full \
+                   --error-exitcode=1 \
+                   ./target/debug/deps/meshara-*
+
+      - name: Upload Valgrind logs
+        if: failure()
+        uses: actions/upload-artifact@v3
+        with:
+          name: valgrind-logs
+          path: valgrind.log
+```
+
+### Miri (Rust Interpreter)
+
+**Purpose**: Detect undefined behavior in unsafe Rust code.
+
+**Setup**:
+```bash
+# Install Miri
+rustup +nightly component add miri
+
+# Run tests under Miri
+cargo +nightly miri test
+```
+
+**What Miri Detects**:
+- Use-after-free
+- Out-of-bounds memory accesses
+- Invalid pointer arithmetic
+- Data races
+- Unaligned pointer accesses
+- Violating type invariants
+
+**Example Miri Test**:
+```rust
+#[test]
+fn test_unsafe_code_safety() {
+    // This test will fail under Miri if unsafe code has UB
+    let identity = Identity::generate().unwrap();
+    let msg = b"Test message";
+    let signature = identity.sign(msg);
+    assert!(identity.verify(msg, &signature));
+}
+```
+
+### AddressSanitizer (ASan)
+
+**Purpose**: Detect memory corruption at runtime.
+
+**Setup**:
+```bash
+# Build with AddressSanitizer
+RUSTFLAGS=-Zsanitizer=address cargo +nightly build --target x86_64-unknown-linux-gnu
+
+# Run tests
+RUSTFLAGS=-Zsanitizer=address cargo +nightly test --target x86_64-unknown-linux-gnu
+```
+
+**What ASan Detects**:
+- Heap buffer overflow
+- Stack buffer overflow
+- Use-after-free
+- Use-after-return
+- Use-after-scope
+- Double-free
+
+### LeakSanitizer (LSan)
+
+**Purpose**: Detect memory leaks.
+
+**Setup**:
+```bash
+# Build with LeakSanitizer
+RUSTFLAGS=-Zsanitizer=leak cargo +nightly build
+
+# Run with leak detection
+RUSTFLAGS=-Zsanitizer=leak cargo +nightly test
+```
+
+**Example Leak Detection**:
+```
+=================================================================
+==12345==ERROR: LeakSanitizer: detected memory leaks
+
+Direct leak of 1024 byte(s) in 1 object(s) allocated from:
+    #0 0x7f... in malloc
+    #1 0x7f... in alloc::alloc::alloc
+    #2 0x7f... in meshara::crypto::keys::generate
+
+SUMMARY: LeakSanitizer: 1024 byte(s) leaked in 1 allocation(s).
+```
+
+---
+
+## Sensitive Data Handling
+
+### Secure Memory Clearing
+
+**Requirement**: All cryptographic keys and secrets must be cleared from memory when dropped.
+
+**Implementation with zeroize**:
+```rust
+use zeroize::{Zeroize, ZeroizeOnDrop};
+
+#[derive(Zeroize, ZeroizeOnDrop)]
+pub struct PrivateKey {
+    #[zeroize(skip)]
+    pub_key: PublicKey,
+    sec_key: [u8; 32],
+}
+
+impl Drop for PrivateKey {
+    fn drop(&mut self) {
+        // Automatically zeroized by ZeroizeOnDrop
+        // Also manually zeroize to be explicit
+        self.sec_key.zeroize();
+    }
+}
+```
+
+**Validation Test**:
+```rust
+#[test]
+fn test_private_key_zeroization() {
+    let key_ptr: *const u8;
+
+    {
+        let identity = Identity::generate().unwrap();
+        key_ptr = identity.private_key_ptr();
+
+        // Verify key is non-zero
+        unsafe {
+            let key_bytes = std::slice::from_raw_parts(key_ptr, 32);
+            assert!(key_bytes.iter().any(|&b| b != 0));
+        }
+    }  // identity dropped here
+
+    // Verify key memory is zeroed (may not work due to compiler optimizations)
+    // This is a best-effort check
+    unsafe {
+        let key_bytes = std::slice::from_raw_parts(key_ptr, 32);
+        // Note: This test is unreliable, use Valgrind/Miri for proper verification
+    }
+}
+```
+
+### Preventing Secret Leakage
+
+**Common Leakage Vectors**:
+1. **Logging**: Never log private keys or plaintext
+2. **Debug Output**: Redact secrets in Debug impl
+3. **Error Messages**: Don't include secrets in error context
+4. **Crash Dumps**: Prevent core dumps with secrets
+5. **Swap**: Lock sensitive memory pages (mlock)
+
+**Secure Debug Implementation**:
+```rust
+use std::fmt;
+
+pub struct PrivateKey {
+    secret: [u8; 32],
+}
+
+impl fmt::Debug for PrivateKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PrivateKey")
+            .field("secret", &"[REDACTED]")
+            .finish()
+    }
+}
+```
+
+**Memory Locking (prevent swap)**:
+```rust
+use std::ptr;
+
+pub fn lock_memory(data: &[u8]) -> Result<(), Error> {
+    #[cfg(unix)]
+    {
+        unsafe {
+            let ret = libc::mlock(data.as_ptr() as *const libc::c_void, data.len());
+            if ret != 0 {
+                return Err(Error::MemoryLockFailed);
+            }
+        }
+    }
+    Ok(())
+}
+
+pub fn unlock_memory(data: &[u8]) -> Result<(), Error> {
+    #[cfg(unix)]
+    {
+        unsafe {
+            let ret = libc::munlock(data.as_ptr() as *const libc::c_void, data.len());
+            if ret != 0 {
+                return Err(Error::MemoryUnlockFailed);
+            }
+        }
+    }
+    Ok(())
+}
+```
+
+---
+
+## Unsafe Code Audit
+
+### Identifying Unsafe Code
+
+**Find all unsafe blocks**:
+```bash
+# Search for unsafe code
+rg "unsafe" src/ --stats
+
+# List all unsafe blocks
+rg "unsafe \{" src/ -A 5
+```
+
+**Expected Result**: Minimal unsafe code, all justified.
+
+### Unsafe Code Justification
+
+**Every unsafe block must have**:
+1. **Safety Comment**: Explaining why it's safe
+2. **Invariants**: What conditions make it sound
+3. **Alternative Considered**: Why safe alternative not feasible
+
+**Example**:
+```rust
+// SAFETY: This is safe because:
+// 1. `data` is guaranteed to be valid UTF-8 (checked above)
+// 2. The slice lifetime is tied to the input buffer
+// 3. No mutable aliasing possible (data is immutable reference)
+let s = unsafe {
+    std::str::from_utf8_unchecked(data)
+};
+```
+
+### Unsafe Code Review Checklist
+
+For each unsafe block, verify:
+- [ ] Safety comment present and complete
+- [ ] All preconditions documented
+- [ ] Invariants upheld
+- [ ] No undefined behavior possible
+- [ ] Tested under Miri
+- [ ] Reviewed by second engineer
+- [ ] Alternative considered and rejected with reason
+
+---
+
+## Resource Leak Detection
+
+### File Descriptor Leaks
+
+**Detection**:
+```bash
+# Monitor file descriptors during test
+lsof -p $(pgrep meshara) | wc -l
+
+# Continuous monitoring
+watch -n 1 'lsof -p $(pgrep meshara) | wc -l'
+```
+
+**Test**:
+```rust
+#[test]
+fn test_no_file_descriptor_leaks() {
+    use std::fs::File;
+
+    let initial_fds = count_open_file_descriptors();
+
+    // Perform operations that open/close files
+    for _ in 0..1000 {
+        let node = NodeBuilder::new().build().await.unwrap();
+        node.shutdown().await;
+    }
+
+    let final_fds = count_open_file_descriptors();
+
+    // Allow small variance for system activity
+    assert!(final_fds <= initial_fds + 5, "FD leak detected: {} -> {}", initial_fds, final_fds);
+}
+
+#[cfg(target_os = "linux")]
+fn count_open_file_descriptors() -> usize {
+    std::fs::read_dir("/proc/self/fd")
+        .unwrap()
+        .count()
+}
+```
+
+### Thread Leaks
+
+**Detection**:
+```rust
+#[test]
+fn test_no_thread_leaks() {
+    let initial_threads = count_threads();
+
+    // Perform operations that spawn threads
+    for _ in 0..100 {
+        let node = NodeBuilder::new().build().await.unwrap();
+        node.shutdown().await;
+    }
+
+    // Wait for thread cleanup
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    let final_threads = count_threads();
+
+    assert_eq!(final_threads, initial_threads, "Thread leak detected");
+}
+
+#[cfg(target_os = "linux")]
+fn count_threads() -> usize {
+    std::fs::read_dir("/proc/self/task")
+        .unwrap()
+        .count()
+}
+```
+
+### Connection Leaks
+
+**Test**:
+```rust
+#[tokio::test]
+async fn test_no_connection_leaks() {
+    let node = NodeBuilder::new().build().await.unwrap();
+
+    let initial_connections = node.connection_count();
+
+    // Connect and disconnect 1000 times
+    for _ in 0..1000 {
+        let peer = NodeBuilder::new().build().await.unwrap();
+        node.connect_to_peer(peer.address()).await.unwrap();
+        node.disconnect_peer(peer.public_key()).await.unwrap();
+    }
+
+    // Wait for cleanup
+    tokio::time::sleep(Duration::from_secs(1)).await;
+
+    let final_connections = node.connection_count();
+
+    assert_eq!(final_connections, initial_connections, "Connection leak detected");
+}
+```
+
+---
+
+## Long-Running Stability Tests
+
+### Soak Testing
+
+**Purpose**: Run for extended period to detect slow leaks.
+
+**Test**:
+```rust
+#[tokio::test]
+#[ignore]  // Run manually for long tests
+async fn soak_test_72_hours() {
+    let node = NodeBuilder::new().build().await.unwrap();
+
+    let start_memory = get_process_memory_mb();
+    let start_time = Instant::now();
+
+    // Run for 72 hours
+    while start_time.elapsed() < Duration::from_secs(72 * 3600) {
+        // Simulate normal workload
+        node.send_broadcast(b"Heartbeat").await.ok();
+
+        tokio::time::sleep(Duration::from_secs(10)).await;
+
+        // Check memory every hour
+        if start_time.elapsed().as_secs() % 3600 == 0 {
+            let current_memory = get_process_memory_mb();
+            let memory_growth = current_memory - start_memory;
+
+            println!("Memory growth after {} hours: {} MB",
+                start_time.elapsed().as_secs() / 3600,
+                memory_growth
+            );
+
+            // Fail if memory grew >500MB in 72 hours
+            assert!(memory_growth < 500.0, "Memory leak detected: {} MB", memory_growth);
+        }
+    }
+}
+```
+
+### Memory Growth Tracking
+
+**Automated Monitoring**:
+```rust
+struct MemoryTracker {
+    samples: Vec<(Duration, f64)>,
+    start_time: Instant,
+}
+
+impl MemoryTracker {
+    pub fn new() -> Self {
+        Self {
+            samples: Vec::new(),
+            start_time: Instant::now(),
+        }
+    }
+
+    pub fn record_sample(&mut self) {
+        let elapsed = self.start_time.elapsed();
+        let memory_mb = get_process_memory_mb();
+        self.samples.push((elapsed, memory_mb));
+    }
+
+    pub fn growth_rate_mb_per_hour(&self) -> f64 {
+        if self.samples.len() < 2 {
+            return 0.0;
+        }
+
+        // Linear regression to estimate growth rate
+        let (x, y): (Vec<f64>, Vec<f64>) = self.samples.iter()
+            .map(|(t, m)| (t.as_secs_f64() / 3600.0, *m))
+            .unzip();
+
+        linear_regression(&x, &y).slope
+    }
+
+    pub fn is_leaking(&self, threshold_mb_per_hour: f64) -> bool {
+        self.growth_rate_mb_per_hour() > threshold_mb_per_hour
+    }
+}
+```
+
+---
+
+## Success Criteria
+
+**Memory Safety Complete When**:
+- ✓ All tests pass under Valgrind (no leaks)
+- ✓ All tests pass under Miri (no UB)
+- ✓ AddressSanitizer/LeakSanitizer clean
+- ✓ All sensitive data zeroized on drop
+- ✓ All unsafe code justified and reviewed
+- ✓ No file descriptor leaks
+- ✓ No thread leaks
+- ✓ 72-hour soak test shows <100MB memory growth
+- ✓ Memory growth rate <10MB/hour
+
+---
+
+## Resources
+
+- **Valgrind Manual**: https://valgrind.org/docs/manual/
+- **Miri Documentation**: https://github.com/rust-lang/miri
+- **Rust Sanitizers**: https://doc.rust-lang.org/beta/unstable-book/compiler-flags/sanitizer.html
+- **zeroize Crate**: https://docs.rs/zeroize/
+
+---
+
+**Last Updated**: 2025-12-23
+**Owner**: Security/Quality Team
+**Status**: Planning
+**Prerequisites**: MVP complete
+**Estimated Duration**: 2-3 weeks
+**Budget**: $20,000 - $30,000

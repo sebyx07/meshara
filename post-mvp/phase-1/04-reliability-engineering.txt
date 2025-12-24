@@ -1,0 +1,592 @@
+# POST-MVP PHASE 1: RELIABILITY ENGINEERING
+
+## Overview
+
+Production systems must gracefully handle failures, recover from errors, and maintain availability under adverse conditions. Reliability engineering ensures Meshara is resilient to network failures, node crashes, and malicious inputs.
+
+**Objective**: Achieve 99.9% uptime, graceful degradation under failures, automatic recovery.
+
+---
+
+## Chaos Engineering
+
+### What is Chaos Engineering?
+
+Systematically injecting failures to test system resilience:
+- Network partitions
+- Node crashes
+- Message loss
+- Slow/delayed messages
+- Resource exhaustion
+- Byzantine/malicious behavior
+
+**Philosophy**: "Break things in controlled ways to understand how to prevent uncontrolled breakage."
+
+---
+
+## Fault Injection Framework
+
+### Network Fault Injection
+
+**Failure Scenarios**:
+1. **Packet Loss**: 1%, 5%, 10%, 25%, 50% packet drop
+2. **Latency**: +50ms, +200ms, +1000ms delay
+3. **Bandwidth Limit**: 1 Mbps, 100 Kbps throttle
+4. **Jitter**: Variable latency (0-100ms random)
+5. **Network Partition**: Split network into isolated segments
+6. **Flapping Connection**: Repeated connect/disconnect
+7. **Asymmetric Partition**: A can reach B, but B cannot reach A
+
+**Implementation with Toxiproxy**:
+```rust
+// tests/chaos/network_faults.rs
+use toxiproxy_rust::Proxy;
+
+#[tokio::test]
+async fn test_message_delivery_with_packet_loss() {
+    let proxy = Proxy::new("meshara_node", "127.0.0.1:8000", "127.0.0.1:9000");
+
+    // Add 10% packet loss
+    proxy.add_toxic("packet_loss", "latency", 1.0, HashMap::from([
+        ("latency", "0"),
+        ("jitter", "0"),
+    ]));
+
+    // Nodes communicate through proxy
+    let sender = NodeBuilder::new()
+        .peer_address("127.0.0.1:8000")  // Through proxy
+        .build()
+        .await
+        .unwrap();
+
+    let recipient = NodeBuilder::new()
+        .bind_address("127.0.0.1:9000")  // Behind proxy
+        .build()
+        .await
+        .unwrap();
+
+    // Send 100 messages, verify all delivered despite packet loss
+    for i in 0..100 {
+        sender.send_private_message(
+            recipient.public_key(),
+            format!("Message {}", i).as_bytes()
+        ).await.unwrap();
+    }
+
+    // Wait for delivery with retries
+    tokio::time::sleep(Duration::from_secs(10)).await;
+
+    // Verify 100 messages received
+    assert_eq!(recipient.received_messages().len(), 100);
+}
+```
+
+### Node Fault Injection
+
+**Failure Scenarios**:
+1. **Crash**: Abrupt process termination
+2. **Hang**: Node stops responding (deadlock)
+3. **Slow Processing**: Delayed message handling
+4. **Memory Leak**: Growing memory usage
+5. **CPU Spike**: 100% CPU utilization
+6. **Disk Full**: Storage exhaustion
+
+**Implementation**:
+```rust
+// tests/chaos/node_faults.rs
+
+#[tokio::test]
+async fn test_network_resilience_to_node_crashes() {
+    // Create 10-node network
+    let mut nodes = create_test_network(10).await;
+
+    // Send messages continuously
+    let sender_handle = tokio::spawn(async move {
+        loop {
+            nodes[0].broadcast(b"Hello!").await.unwrap();
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    });
+
+    // Crash nodes randomly
+    for _ in 0..5 {
+        let idx = rand::random::<usize>() % nodes.len();
+        println!("Crashing node {}", idx);
+        nodes[idx].shutdown().await;
+        nodes.remove(idx);
+
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    }
+
+    // Verify remaining nodes still communicate
+    // ...
+
+    sender_handle.abort();
+}
+```
+
+### Message Fault Injection
+
+**Failure Scenarios**:
+1. **Corrupted Messages**: Flip random bits
+2. **Malformed Protobuf**: Invalid serialization
+3. **Replay Attacks**: Re-send old messages
+4. **Out-of-Order**: Deliver messages in wrong order
+5. **Duplicate Messages**: Send same message multiple times
+6. **Delayed Messages**: Old message arrives late
+
+**Implementation**:
+```rust
+// tests/chaos/message_faults.rs
+
+fn corrupt_message(mut msg: Vec<u8>) -> Vec<u8> {
+    // Flip random bits
+    for _ in 0..10 {
+        let idx = rand::random::<usize>() % msg.len();
+        msg[idx] ^= 1 << (rand::random::<u8>() % 8);
+    }
+    msg
+}
+
+#[tokio::test]
+async fn test_handling_corrupted_messages() {
+    let sender = NodeBuilder::new().build().await.unwrap();
+    let recipient = NodeBuilder::new().build().await.unwrap();
+
+    // Send corrupted message
+    let valid_msg = create_test_message();
+    let corrupted_msg = corrupt_message(valid_msg);
+
+    recipient.inject_message(corrupted_msg).await;
+
+    // Verify recipient handles gracefully (doesn't crash)
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    assert!(recipient.is_running());
+}
+```
+
+---
+
+## Failure Recovery Testing
+
+### Automatic Reconnection
+
+**Test Scenario**: Node loses connection, should automatically reconnect.
+
+```rust
+#[tokio::test]
+async fn test_automatic_reconnection() {
+    let node_a = NodeBuilder::new().build().await.unwrap();
+    let node_b = NodeBuilder::new().build().await.unwrap();
+
+    // Establish connection
+    node_a.connect_to_peer(node_b.address()).await.unwrap();
+    assert!(node_a.is_connected_to(&node_b.public_key()));
+
+    // Simulate network failure (drop connection)
+    node_a.simulate_connection_loss(&node_b.public_key()).await;
+    assert!(!node_a.is_connected_to(&node_b.public_key()));
+
+    // Wait for automatic reconnection (exponential backoff)
+    for i in 1..=5 {
+        tokio::time::sleep(Duration::from_secs(2_u64.pow(i))).await;
+        if node_a.is_connected_to(&node_b.public_key()) {
+            break;
+        }
+    }
+
+    // Verify reconnected within 30 seconds
+    assert!(node_a.is_connected_to(&node_b.public_key()));
+}
+```
+
+### Message Retry Logic
+
+**Test Scenario**: Message fails to deliver, should retry with exponential backoff.
+
+```rust
+#[tokio::test]
+async fn test_message_retry_with_exponential_backoff() {
+    let sender = NodeBuilder::new().build().await.unwrap();
+    let recipient = NodeBuilder::new().build().await.unwrap();
+
+    // Simulate temporary network failure
+    recipient.set_reachable(false).await;
+
+    // Send message (will fail initially)
+    let msg_id = sender.send_private_message(
+        recipient.public_key(),
+        b"Test message"
+    ).await.unwrap();
+
+    // Wait for retries
+    tokio::time::sleep(Duration::from_secs(5)).await;
+
+    // Restore network
+    recipient.set_reachable(true).await;
+
+    // Wait for retry to succeed
+    tokio::time::sleep(Duration::from_secs(10)).await;
+
+    // Verify message eventually delivered
+    assert!(recipient.has_received_message(&msg_id));
+}
+```
+
+### State Recovery After Crash
+
+**Test Scenario**: Node crashes and restarts, should recover state from disk.
+
+```rust
+#[tokio::test]
+async fn test_state_recovery_after_crash() {
+    let temp_dir = tempfile::tempdir().unwrap();
+
+    // Create node with persistent storage
+    let node = NodeBuilder::new()
+        .storage_path(temp_dir.path())
+        .build()
+        .await
+        .unwrap();
+
+    let identity = node.identity().clone();
+
+    // Send some messages
+    node.send_broadcast(b"Message 1").await.unwrap();
+    node.send_broadcast(b"Message 2").await.unwrap();
+
+    let routing_table_size = node.routing_table_size();
+
+    // Simulate crash (drop node)
+    drop(node);
+
+    // Restart node from same storage
+    let recovered_node = NodeBuilder::new()
+        .storage_path(temp_dir.path())
+        .build()
+        .await
+        .unwrap();
+
+    // Verify identity recovered
+    assert_eq!(recovered_node.identity().public_key(), identity.public_key());
+
+    // Verify routing table recovered
+    assert_eq!(recovered_node.routing_table_size(), routing_table_size);
+}
+```
+
+---
+
+## Resource Exhaustion Testing
+
+### Memory Exhaustion
+
+**Test Scenario**: Attacker sends many large messages to exhaust memory.
+
+```rust
+#[tokio::test]
+async fn test_resistance_to_memory_exhaustion() {
+    let node = NodeBuilder::new()
+        .max_message_size(1_000_000)  // 1 MB limit
+        .max_pending_messages(1000)   // Queue limit
+        .build()
+        .await
+        .unwrap();
+
+    let attacker = NodeBuilder::new().build().await.unwrap();
+
+    // Send 10,000 large messages
+    for i in 0..10_000 {
+        let large_msg = vec![0u8; 1_000_000];
+        attacker.send_to_peer(node.public_key(), &large_msg).await.ok();
+    }
+
+    // Wait for processing
+    tokio::time::sleep(Duration::from_secs(10)).await;
+
+    // Verify node still running and memory bounded
+    assert!(node.is_running());
+    let memory_usage = get_process_memory_mb();
+    assert!(memory_usage < 1000, "Memory usage: {} MB", memory_usage);
+}
+```
+
+### Connection Exhaustion
+
+**Test Scenario**: Many nodes try to connect simultaneously.
+
+```rust
+#[tokio::test]
+async fn test_connection_limit_enforcement() {
+    let node = NodeBuilder::new()
+        .max_connections(100)
+        .build()
+        .await
+        .unwrap();
+
+    // Create 200 nodes trying to connect
+    let mut handles = vec![];
+    for _ in 0..200 {
+        let node_addr = node.address().clone();
+        let handle = tokio::spawn(async move {
+            let peer = NodeBuilder::new().build().await.unwrap();
+            peer.connect_to_peer(node_addr).await
+        });
+        handles.push(handle);
+    }
+
+    // Wait for all connection attempts
+    let results = futures::future::join_all(handles).await;
+
+    // Verify max 100 connections accepted
+    let successful = results.iter().filter(|r| r.as_ref().unwrap().is_ok()).count();
+    assert!(successful <= 100, "Accepted too many connections: {}", successful);
+
+    // Verify node still responsive
+    assert!(node.is_running());
+}
+```
+
+### CPU Exhaustion
+
+**Test Scenario**: Attacker sends computationally expensive messages (signature verification).
+
+```rust
+#[tokio::test]
+async fn test_rate_limiting_prevents_cpu_exhaustion() {
+    let node = NodeBuilder::new()
+        .rate_limit(100)  // Max 100 msg/sec per peer
+        .build()
+        .await
+        .unwrap();
+
+    let attacker = NodeBuilder::new().build().await.unwrap();
+
+    // Send 10,000 messages as fast as possible
+    let start = Instant::now();
+    for _ in 0..10_000 {
+        attacker.send_to_peer(node.public_key(), b"Spam").await.ok();
+    }
+
+    // Wait for processing
+    tokio::time::sleep(Duration::from_secs(5)).await;
+
+    // Verify node still responsive
+    assert!(node.is_running());
+
+    // Verify rate limiting applied (not all messages processed)
+    let processed = node.message_count();
+    assert!(processed < 10_000, "Rate limiting not enforced: {} messages", processed);
+}
+```
+
+---
+
+## Byzantine Behavior Testing
+
+### Malicious Nodes
+
+**Test Scenarios**:
+1. **Invalid Signatures**: Send messages with forged signatures
+2. **Message Tampering**: Modify message content in transit
+3. **Replay Attacks**: Re-send old valid messages
+4. **Routing Attacks**: Provide false routing information
+5. **Sybil Attack**: Create many fake identities
+6. **Eclipse Attack**: Surround victim with malicious peers
+
+**Example Test**:
+```rust
+#[tokio::test]
+async fn test_rejection_of_invalid_signatures() {
+    let node = NodeBuilder::new().build().await.unwrap();
+
+    // Create message with valid signature
+    let valid_msg = create_signed_message();
+
+    // Tamper with signature
+    let mut invalid_msg = valid_msg.clone();
+    invalid_msg.signature[0] ^= 1;
+
+    // Send tampered message
+    node.inject_message(invalid_msg).await;
+
+    // Verify message rejected (not processed)
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(node.message_count(), 0);
+}
+```
+
+---
+
+## Graceful Degradation
+
+### Partial Network Connectivity
+
+**Expected Behavior**: Node should function with reduced connectivity.
+
+```rust
+#[tokio::test]
+async fn test_operation_with_reduced_connectivity() {
+    // Create 10-node network
+    let nodes = create_test_network(10).await;
+
+    // Partition network (nodes 0-4 can't reach nodes 5-9)
+    partition_network(&nodes[0..5], &nodes[5..10]);
+
+    // Nodes within partition should still communicate
+    nodes[0].send_private_message(nodes[1].public_key(), b"Hello").await.unwrap();
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert!(nodes[1].has_received_message_from(&nodes[0].public_key()));
+
+    // Cross-partition messages should fail gracefully
+    let result = nodes[0].send_private_message(nodes[9].public_key(), b"Hello").await;
+    assert!(result.is_err() || result.unwrap().is_pending());
+}
+```
+
+### Limited Resources
+
+**Expected Behavior**: Reduce functionality gracefully when resources constrained.
+
+```rust
+#[tokio::test]
+async fn test_graceful_degradation_under_memory_pressure() {
+    let node = NodeBuilder::new()
+        .memory_limit(100_000_000)  // 100 MB limit
+        .build()
+        .await
+        .unwrap();
+
+    // Fill memory with messages
+    for _ in 0..1000 {
+        node.queue_message(vec![0u8; 100_000]).await;
+    }
+
+    // Verify node switches to degraded mode
+    // (e.g., drops low-priority messages, reduces cache)
+    assert!(node.is_degraded());
+
+    // Critical functionality still works
+    let result = node.send_private_message(
+        &random_public_key(),
+        b"Important message"
+    ).await;
+    assert!(result.is_ok());
+}
+```
+
+---
+
+## Health Checks
+
+### Node Health Endpoint
+
+**Health States**:
+- **Healthy**: All systems operational
+- **Degraded**: Reduced functionality (e.g., high memory, slow network)
+- **Unhealthy**: Critical failure (e.g., can't connect to any peers)
+
+**Implementation**:
+```rust
+pub struct HealthStatus {
+    pub state: HealthState,
+    pub uptime: Duration,
+    pub connected_peers: usize,
+    pub pending_messages: usize,
+    pub memory_usage_mb: f64,
+    pub cpu_usage_percent: f64,
+    pub errors_per_minute: usize,
+}
+
+impl Node {
+    pub async fn health_check(&self) -> HealthStatus {
+        let state = if self.connected_peers == 0 {
+            HealthState::Unhealthy
+        } else if self.memory_usage() > 0.9 * self.memory_limit {
+            HealthState::Degraded
+        } else {
+            HealthState::Healthy
+        };
+
+        HealthStatus {
+            state,
+            uptime: self.start_time.elapsed(),
+            connected_peers: self.connected_peers,
+            pending_messages: self.pending_message_count(),
+            memory_usage_mb: get_process_memory_mb(),
+            cpu_usage_percent: get_cpu_usage(),
+            errors_per_minute: self.error_rate(),
+        }
+    }
+}
+```
+
+### Automated Health Monitoring
+
+**Test Health Degradation Recovery**:
+```rust
+#[tokio::test]
+async fn test_health_recovery_after_degradation() {
+    let node = NodeBuilder::new().build().await.unwrap();
+
+    // Initially healthy
+    assert_eq!(node.health_check().await.state, HealthState::Healthy);
+
+    // Cause degradation (disconnect all peers)
+    for peer in node.peers() {
+        node.disconnect_peer(peer).await;
+    }
+
+    // Verify degraded state
+    assert_eq!(node.health_check().await.state, HealthState::Unhealthy);
+
+    // Wait for automatic recovery (reconnection)
+    for _ in 0..10 {
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        if node.health_check().await.state == HealthState::Healthy {
+            break;
+        }
+    }
+
+    // Verify recovered
+    assert_eq!(node.health_check().await.state, HealthState::Healthy);
+}
+```
+
+---
+
+## Success Criteria
+
+**Reliability Engineering Complete When**:
+- ✓ Chaos testing framework operational
+- ✓ All fault injection scenarios tested (network, node, message)
+- ✓ Automatic recovery works for all failure modes
+- ✓ Resource exhaustion attacks mitigated
+- ✓ Byzantine behavior detected and rejected
+- ✓ Graceful degradation under reduced resources
+- ✓ Health check system implemented
+- ✓ 99.9% uptime demonstrated in 72-hour chaos test
+
+**Key Metrics**:
+- Mean Time Between Failures (MTBF): >168 hours (1 week)
+- Mean Time To Recovery (MTTR): <60 seconds
+- Message delivery success rate: >99.9% (with retries)
+- Network partition tolerance: Operate with 50% peer connectivity
+
+---
+
+## Resources
+
+- **Chaos Monkey (Netflix)**: https://netflix.github.io/chaosmonkey/
+- **Principles of Chaos Engineering**: https://principlesofchaos.org/
+- **Jepsen (Distributed Systems Testing)**: https://jepsen.io/
+
+---
+
+**Last Updated**: 2025-12-23
+**Owner**: Reliability Team
+**Status**: Planning
+**Prerequisites**: MVP complete, basic testing infrastructure
+**Estimated Duration**: 4-6 weeks
+**Budget**: $40,000 - $60,000

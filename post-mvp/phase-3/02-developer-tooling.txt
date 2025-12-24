@@ -1,0 +1,534 @@
+# POST-MVP PHASE 3: DEVELOPER TOOLING
+
+## Overview
+
+Provide developers with tools to debug, test, and monitor Meshara networks. Make development and troubleshooting easier with CLI tools, network simulators, and debugging utilities.
+
+**Objective**: Comprehensive developer tooling for efficient development and debugging.
+
+---
+
+## meshara-cli Tool
+
+### Command-Line Interface
+
+**Purpose**: Swiss army knife for Meshara network management.
+
+**Installation**:
+```bash
+cargo install meshara-cli
+```
+
+**Commands**:
+
+```bash
+# Identity management
+meshara-cli identity generate
+meshara-cli identity export --file identity.json
+meshara-cli identity import --file identity.json
+
+# Network operations
+meshara-cli node start --config config.toml
+meshara-cli node status
+meshara-cli node stop
+
+# Messaging
+meshara-cli send --to <public_key> --message "Hello!"
+meshara-cli broadcast --message "Hello, everyone!"
+
+# Network inspection
+meshara-cli peers list
+meshara-cli peers connect <address>
+meshara-cli routing table
+
+# Debugging
+meshara-cli debug logs --level trace
+meshara-cli debug traffic --capture output.pcap
+meshara-cli debug metrics
+
+# Testing
+meshara-cli test network --nodes 10
+meshara-cli test latency --peer <address>
+meshara-cli test throughput
+```
+
+### Implementation (Clap v4)
+
+**Cargo.toml**:
+```toml
+[dependencies]
+clap = { version = "4.4", features = ["derive", "cargo"] }
+tokio = { version = "1.35", features = ["full"] }
+meshara = { path = "../" }
+```
+
+**src/main.rs**:
+```rust
+use clap::{Parser, Subcommand};
+use meshara::Node;
+
+#[derive(Parser)]
+#[command(name = "meshara-cli")]
+#[command(about = "Meshara network command-line tool", long_about = None)]
+struct Cli {
+    #[command(subcommand)]
+    command: Commands,
+}
+
+#[derive(Subcommand)]
+enum Commands {
+    /// Identity management commands
+    Identity {
+        #[command(subcommand)]
+        command: IdentityCommands,
+    },
+    /// Node operations
+    Node {
+        #[command(subcommand)]
+        command: NodeCommands,
+    },
+    /// Send messages
+    Send {
+        /// Recipient public key
+        #[arg(short, long)]
+        to: String,
+        /// Message content
+        #[arg(short, long)]
+        message: String,
+    },
+    /// Broadcast message
+    Broadcast {
+        /// Message content
+        #[arg(short, long)]
+        message: String,
+    },
+    /// Network inspection
+    Peers {
+        #[command(subcommand)]
+        command: PeerCommands,
+    },
+    /// Routing table operations
+    Routing {
+        #[command(subcommand)]
+        command: RoutingCommands,
+    },
+    /// Debug operations
+    Debug {
+        #[command(subcommand)]
+        command: DebugCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum IdentityCommands {
+    /// Generate new identity
+    Generate,
+    /// Export identity to file
+    Export {
+        #[arg(short, long)]
+        file: String,
+    },
+    /// Import identity from file
+    Import {
+        #[arg(short, long)]
+        file: String,
+    },
+}
+
+#[tokio::main]
+async fn main() {
+    let cli = Cli::parse();
+
+    match &cli.command {
+        Commands::Identity { command } => handle_identity(command).await,
+        Commands::Node { command } => handle_node(command).await,
+        Commands::Send { to, message } => handle_send(to, message).await,
+        Commands::Broadcast { message } => handle_broadcast(message).await,
+        Commands::Peers { command } => handle_peers(command).await,
+        Commands::Routing { command } => handle_routing(command).await,
+        Commands::Debug { command } => handle_debug(command).await,
+    }
+}
+
+async fn handle_identity(command: &IdentityCommands) {
+    match command {
+        IdentityCommands::Generate => {
+            let identity = Identity::generate().unwrap();
+            println!("Public key: {}", hex::encode(identity.public_key()));
+            println!("Identity saved to ~/.meshara/identity.bin");
+        }
+        IdentityCommands::Export { file } => {
+            let identity = load_identity();
+            identity.export_to_file(file).unwrap();
+            println!("Identity exported to {}", file);
+        }
+        IdentityCommands::Import { file } => {
+            let identity = Identity::import_from_file(file).unwrap();
+            identity.save().unwrap();
+            println!("Identity imported from {}", file);
+        }
+    }
+}
+
+async fn handle_send(to: &str, message: &str) {
+    let node = get_running_node().await;
+    let msg_id = node.send_message(to, message.as_bytes()).await.unwrap();
+    println!("Message sent: {}", msg_id);
+}
+```
+
+---
+
+## Network Simulator
+
+### Purpose
+
+Test Meshara networks locally without deploying multiple machines.
+
+**Features**:
+- Spawn N nodes in-process
+- Simulated network conditions (latency, packet loss)
+- Traffic visualization
+- Automatic test scenarios
+
+### Implementation
+
+**meshara-sim crate**:
+```rust
+use meshara::Node;
+use std::collections::HashMap;
+use tokio::time::Duration;
+
+pub struct NetworkSimulator {
+    nodes: HashMap<NodeId, Node>,
+    latency: Duration,
+    packet_loss: f64,
+}
+
+impl NetworkSimulator {
+    pub async fn new(num_nodes: usize) -> Self {
+        let mut nodes = HashMap::new();
+
+        for i in 0..num_nodes {
+            let node = Node::builder()
+                .bind_address(format!("127.0.0.1:{}", 10000 + i))
+                .build()
+                .await
+                .unwrap();
+
+            nodes.insert(node.id(), node);
+        }
+
+        NetworkSimulator {
+            nodes,
+            latency: Duration::from_millis(50),
+            packet_loss: 0.0,
+        }
+    }
+
+    pub fn set_latency(&mut self, latency: Duration) {
+        self.latency = latency;
+    }
+
+    pub fn set_packet_loss(&mut self, rate: f64) {
+        self.packet_loss = rate.clamp(0.0, 1.0);
+    }
+
+    pub async fn connect_all(&mut self) {
+        let node_ids: Vec<_> = self.nodes.keys().cloned().collect();
+
+        for (i, node_id) in node_ids.iter().enumerate() {
+            for peer_id in &node_ids[i + 1..] {
+                if let (Some(node), Some(peer)) = (self.nodes.get(node_id), self.nodes.get(peer_id)) {
+                    node.connect_to(peer.address()).await.ok();
+                }
+            }
+        }
+    }
+
+    pub async fn partition(&mut self, group_a: &[NodeId], group_b: &[NodeId]) {
+        // Disconnect nodes between groups
+        for node_a in group_a {
+            for node_b in group_b {
+                if let Some(node) = self.nodes.get(node_a) {
+                    node.disconnect_from(node_b).await.ok();
+                }
+            }
+        }
+    }
+
+    pub async fn heal_partition(&mut self) {
+        self.connect_all().await;
+    }
+
+    pub fn get_node(&self, id: &NodeId) -> Option<&Node> {
+        self.nodes.get(id)
+    }
+
+    pub fn nodes(&self) -> impl Iterator<Item = &Node> {
+        self.nodes.values()
+    }
+}
+```
+
+**Usage Example**:
+```rust
+#[tokio::test]
+async fn test_100_node_network() {
+    let mut sim = NetworkSimulator::new(100).await;
+    sim.set_latency(Duration::from_millis(50));
+    sim.set_packet_loss(0.01);
+    sim.connect_all().await;
+
+    // Send broadcast from node 0
+    let node0 = sim.get_node(&NodeId(0)).unwrap();
+    node0.broadcast(b"Hello, network!").await.unwrap();
+
+    // Wait for propagation
+    tokio::time::sleep(Duration::from_secs(5)).await;
+
+    // Verify all nodes received
+    for node in sim.nodes() {
+        assert!(node.has_received(b"Hello, network!"));
+    }
+}
+```
+
+---
+
+## Traffic Analyzer
+
+### Packet Capture
+
+**meshara-pcap tool**:
+```bash
+# Capture traffic to file
+meshara-cli debug traffic --capture output.pcap
+
+# Analyze captured traffic
+meshara-analyze output.pcap
+```
+
+**Output**:
+```
+Traffic Analysis Report
+======================
+Total Packets: 1,234
+Total Bytes: 12,345,678
+
+Message Types:
+  Private Message: 456 (37%)
+  Broadcast: 123 (10%)
+  Routing Update: 234 (19%)
+  Query: 89 (7%)
+  Response: 332 (27%)
+
+Top Senders:
+  1. abc123... (234 messages)
+  2. def456... (189 messages)
+  3. ghi789... (167 messages)
+
+Average Message Size: 10 KB
+Peak Throughput: 1.2 MB/s
+```
+
+### Real-Time Monitoring
+
+**meshara-monitor TUI (Terminal UI)**:
+```bash
+meshara-cli monitor
+```
+
+**Interface** (using ratatui):
+```
+┌─────────────────────────────────────────────────────────────┐
+│ Meshara Network Monitor                         [Q] Quit   │
+├─────────────────────────────────────────────────────────────┤
+│ Node Status                                                 │
+│   Identity: abc123...                                       │
+│   Connected Peers: 42                                       │
+│   Uptime: 3h 24m                                           │
+│   Memory: 145 MB                                           │
+├─────────────────────────────────────────────────────────────┤
+│ Traffic (last 60s)                                         │
+│   Messages Sent: 234                                       │
+│   Messages Received: 456                                   │
+│   Bytes TX: 2.3 MB                                         │
+│   Bytes RX: 4.5 MB                                         │
+├─────────────────────────────────────────────────────────────┤
+│ Recent Messages                                            │
+│   [10:34:12] Private → def456... (1.2 KB)                 │
+│   [10:34:15] Broadcast (512 B)                            │
+│   [10:34:18] Private ← ghi789... (3.4 KB)                 │
+├─────────────────────────────────────────────────────────────┤
+│ Peers                                                      │
+│   def456... │ 127.0.0.1:10001 │ 42ms │ ✓                 │
+│   ghi789... │ 192.168.1.5:8000 │ 105ms │ ✓               │
+│   jkl012... │ 10.0.0.3:8000 │ 250ms │ ✗ (disconnected)  │
+└─────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## IDE Integrations
+
+### VS Code Extension
+
+**Features**:
+- Syntax highlighting for .proto files
+- Code snippets for common Meshara patterns
+- Inline documentation
+- Network simulator integration
+- Debug visualizations
+
+**Extension Files**:
+```
+.vscode/extensions/meshara/
+├── package.json
+├── syntaxes/meshara.tmLanguage.json
+├── snippets/meshara.json
+└── src/extension.ts
+```
+
+**Snippets** (.vscode/snippets/meshara.json):
+```json
+{
+  "Create Meshara Node": {
+    "prefix": "meshara-node",
+    "body": [
+      "let node = NodeBuilder::new()",
+      "    .bind_address(\"${1:0.0.0.0:8000}\")",
+      "    .storage_path(\"${2:/tmp/meshara}\")",
+      "    .build()",
+      "    .await?;",
+      "$0"
+    ],
+    "description": "Create a new Meshara node"
+  },
+  "Send Private Message": {
+    "prefix": "meshara-send",
+    "body": [
+      "node.send_private_message(",
+      "    &${1:recipient_pubkey},",
+      "    ${2:message_bytes}",
+      ").await?;",
+      "$0"
+    ],
+    "description": "Send a private message"
+  }
+}
+```
+
+### IntelliJ IDEA Plugin
+
+**Features**:
+- Meshara project templates
+- Run configurations for nodes
+- Network topology visualization
+- Profiling integration
+
+---
+
+## Testing Utilities
+
+### Mock Network
+
+**meshara-test-utils crate**:
+```rust
+pub struct MockNetwork {
+    nodes: Vec<Node>,
+}
+
+impl MockNetwork {
+    pub async fn with_nodes(n: usize) -> Self {
+        let mut nodes = Vec::new();
+        for _ in 0..n {
+            nodes.push(Node::builder().build().await.unwrap());
+        }
+        MockNetwork { nodes }
+    }
+
+    pub async fn send_between(&self, from: usize, to: usize, msg: &[u8]) {
+        self.nodes[from]
+            .send_to(&self.nodes[to].public_key(), msg)
+            .await
+            .unwrap();
+    }
+
+    pub async fn partition(&self, split: usize) {
+        // Simulate network partition
+        for i in 0..split {
+            for j in split..self.nodes.len() {
+                self.nodes[i].disconnect_from(&self.nodes[j].id()).await.ok();
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn test_with_mock_network() {
+    let network = MockNetwork::with_nodes(10).await;
+    network.send_between(0, 5, b"test").await;
+    // ...
+}
+```
+
+---
+
+## Documentation Generator
+
+### API Reference
+
+**Generate docs from code**:
+```bash
+cargo doc --no-deps --open
+```
+
+**Custom Documentation Site**:
+- Use `mdbook` for guides
+- Auto-generated API reference from Rustdoc
+- Interactive examples with RunCode
+- Search functionality
+
+**docs/ Structure**:
+```
+docs/
+├── book.toml
+├── src/
+│   ├── SUMMARY.md
+│   ├── getting-started/
+│   │   ├── installation.md
+│   │   └── quick-start.md
+│   ├── guides/
+│   │   ├── sending-messages.md
+│   │   ├── network-configuration.md
+│   │   └── security-best-practices.md
+│   └── api/
+│       ├── node.md
+│       ├── identity.md
+│       └── routing.md
+└── theme/
+```
+
+---
+
+## Success Criteria
+
+**Developer Tooling Complete When**:
+- ✓ meshara-cli tool published with all commands
+- ✓ Network simulator available as library
+- ✓ Traffic analyzer functional
+- ✓ Real-time monitor TUI working
+- ✓ VS Code extension published
+- ✓ Test utilities crate available
+- ✓ Documentation site live with search
+- ✓ Developer feedback incorporated
+
+---
+
+**Last Updated**: 2025-12-23
+**Owner**: Developer Relations Team
+**Status**: Planning
+**Prerequisites**: MVP complete, Phase 2 complete
+**Estimated Duration**: 8-10 weeks
+**Budget**: $70,000 - $90,000

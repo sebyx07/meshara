@@ -1,0 +1,484 @@
+# POST-MVP PHASE 6: LONG-TERM SUSTAINABILITY
+
+## Overview
+
+Ensure Meshara remains maintained, secure, and relevant for years to come. Establish governance, community, security processes, and sustainable funding.
+
+**Objective**: Self-sustaining open source project with active community and reliable funding.
+
+---
+
+## Governance Model
+
+### Organizational Structure
+
+**Governance Tiers**:
+
+1. **Steering Committee** (3-7 members)
+   - Strategic direction
+   - Breaking tie votes
+   - Release approval
+   - Membership: Elected annually by contributors
+
+2. **Core Maintainers** (5-15 members)
+   - Code review and merging
+   - Release management
+   - Security response
+   - Membership: Appointed by steering committee
+
+3. **Contributors**
+   - Submit PRs
+   - Report issues
+   - Participate in discussions
+   - Membership: Anyone with merged PR
+
+4. **Users**
+   - Provide feedback
+   - Report bugs
+   - Participate in community
+   - Membership: Anyone using Meshara
+
+**Decision Making**:
+- **Consensus**: Preferred for most decisions
+- **Lazy Consensus**: Changes approved if no objections within 72 hours
+- **Vote**: If consensus fails, majority vote of core maintainers
+- **Steering Committee**: Final decision on controversial issues
+
+---
+
+## RFC Process
+
+### Proposing Changes
+
+**RFC (Request for Comments) Process** for significant changes:
+
+**When to Write RFC**:
+- Breaking protocol changes
+- New major features
+- Architectural changes
+- Security-sensitive changes
+
+**RFC Template** (rfcs/0001-template.md):
+```markdown
+# RFC 0001: [Title]
+
+- **Start Date**: YYYY-MM-DD
+- **RFC PR**: #123
+- **Tracking Issue**: #456
+
+## Summary
+
+One-paragraph explanation of the change.
+
+## Motivation
+
+Why are we doing this? What problems does it solve?
+
+## Guide-Level Explanation
+
+Explain the proposal as if teaching it to another Meshara user.
+
+## Reference-Level Explanation
+
+Detailed technical explanation.
+
+## Drawbacks
+
+Why should we *not* do this?
+
+## Rationale and Alternatives
+
+- Why is this the best design?
+- What other designs were considered?
+- What is the impact of not doing this?
+
+## Prior Art
+
+Similar features in other projects.
+
+## Unresolved Questions
+
+What parts of the design need to be resolved during implementation?
+
+## Future Possibilities
+
+How might this be extended in the future?
+```
+
+**RFC Workflow**:
+1. **Draft**: Author creates RFC PR
+2. **Discussion**: 2-week comment period
+3. **Revision**: Author addresses feedback
+4. **Vote**: Core maintainers vote (requires 2/3 majority)
+5. **Accepted**: Merged to rfcs/ directory
+6. **Implementation**: Tracking issue created
+7. **Stabilization**: Feature implemented, tested, documented
+8. **Released**: Included in next release
+
+---
+
+## Contribution Guidelines
+
+### CONTRIBUTING.md
+
+**Key Sections**:
+1. **Code of Conduct**: Expected behavior
+2. **How to Contribute**: Bug reports, feature requests, PRs
+3. **Development Setup**: Getting started
+4. **Coding Standards**: Style guide, best practices
+5. **Testing Requirements**: Test coverage, CI requirements
+6. **Review Process**: What to expect
+
+**Example**:
+```markdown
+# Contributing to Meshara
+
+We welcome contributions! Here's how to get started:
+
+## Reporting Bugs
+
+- Search existing issues first
+- Include minimal reproduction case
+- Provide system information (OS, Rust version)
+
+## Proposing Features
+
+- Open discussion issue first
+- For major changes, write an RFC
+
+## Pull Requests
+
+1. Fork the repository
+2. Create feature branch (`git checkout -b feature/amazing-feature`)
+3. Make changes with tests
+4. Ensure CI passes (`cargo test`, `cargo clippy`)
+5. Commit with descriptive message
+6. Push and open PR
+
+## Code Review
+
+- All PRs require 2 approvals from core maintainers
+- CI must pass
+- Tests required for new features
+- Documentation required for public APIs
+
+## Code of Conduct
+
+Be respectful, inclusive, and professional. See CODE_OF_CONDUCT.md.
+```
+
+### CODE_OF_CONDUCT.md
+
+**Adopt**: [Contributor Covenant](https://www.contributor-covenant.org/)
+
+**Key Points**:
+- Be welcoming and inclusive
+- Be respectful of differing viewpoints
+- Accept constructive criticism
+- Focus on what's best for the community
+
+**Enforcement**:
+- Warning for first violation
+- Temporary ban for repeated violations
+- Permanent ban for serious violations
+
+---
+
+## Security Policy
+
+### SECURITY.md
+
+**Vulnerability Reporting**:
+```markdown
+# Security Policy
+
+## Reporting a Vulnerability
+
+**DO NOT** open a public issue for security vulnerabilities.
+
+Instead, email: security@meshara.org
+
+Encrypt with PGP key: [Key ID: 0xABCD1234]
+
+## What to Include
+
+- Description of vulnerability
+- Steps to reproduce
+- Potential impact
+- Suggested fix (if any)
+
+## Response Timeline
+
+- **Acknowledgment**: Within 24 hours
+- **Initial Assessment**: Within 3 days
+- **Fix Development**: Within 14 days (critical), 30 days (high)
+- **Public Disclosure**: After fix released + 7 days
+
+## CVE Assignment
+
+We request CVEs for all confirmed vulnerabilities.
+
+## Bug Bounty
+
+See https://meshara.org/security/bug-bounty for rewards.
+
+## Supported Versions
+
+| Version | Supported |
+|---------|-----------|
+| 1.x     | ✅        |
+| 0.9.x   | ✅        |
+| < 0.9   | ❌        |
+
+## Security Advisories
+
+https://github.com/meshara/meshara/security/advisories
+```
+
+### CVE Process
+
+**When Vulnerability Found**:
+1. Assign CVE ID via GitHub Security Advisory
+2. Develop fix privately
+3. Coordinate disclosure with reporter
+4. Release patched version
+5. Publish security advisory
+6. Notify users via security mailing list
+
+**Example Advisory**:
+```
+CVE-2025-12345: Timing Attack on Signature Verification
+
+Severity: High (CVSS 7.5)
+
+Affected Versions: meshara < 1.2.3
+
+Description: Variable-time signature verification leaks information
+through timing side-channel, allowing remote attackers to forge
+signatures with ~2^40 operations.
+
+Mitigation: Upgrade to meshara >= 1.2.3
+
+Credit: Jane Doe (security@example.com)
+```
+
+---
+
+## Community Management
+
+### Communication Channels
+
+**Primary Channels**:
+1. **GitHub Discussions**: Q&A, feature requests
+2. **Discord**: Real-time chat (channels: #general, #dev, #support)
+3. **Forum**: Long-form discussions (https://forum.meshara.org)
+4. **Mailing Lists**:
+   - meshara-announce@: Release announcements
+   - meshara-dev@: Development discussions
+   - meshara-security@: Security advisories
+
+**Social Media**:
+- Twitter: @MesharaProject
+- Mastodon: @meshara@fosstodon.org
+- Reddit: r/Meshara
+
+### Community Events
+
+**Monthly**:
+- Community call (first Wednesday)
+- Office hours (developer Q&A)
+
+**Quarterly**:
+- Virtual hackathon
+- Roadmap review
+
+**Annually**:
+- Meshara Summit (in-person conference)
+- Contributors meeting
+
+---
+
+## Release Process
+
+### Versioning (Semantic Versioning)
+
+**Version Format**: MAJOR.MINOR.PATCH
+
+- **MAJOR**: Breaking changes (protocol incompatibility)
+- **MINOR**: New features (backward compatible)
+- **PATCH**: Bug fixes (backward compatible)
+
+**Examples**:
+- `1.0.0` → `1.1.0`: Added onion routing (new feature)
+- `1.1.0` → `1.1.1`: Fixed memory leak (bug fix)
+- `1.9.0` → `2.0.0`: Changed protocol format (breaking)
+
+### Release Cadence
+
+**Regular Releases**:
+- **Major**: Yearly (or as needed for breaking changes)
+- **Minor**: Quarterly (every 3 months)
+- **Patch**: Monthly (or urgent security fixes)
+
+**Release Cycle** (6 weeks):
+1. **Week 1-4**: Feature development
+2. **Week 5**: Feature freeze, testing
+3. **Week 6**: Release candidate, final testing
+4. **Release**: Tag and publish
+
+### Release Checklist
+
+**Pre-Release**:
+- [ ] All tests passing
+- [ ] Clippy warnings addressed
+- [ ] Documentation updated
+- [ ] CHANGELOG.md updated
+- [ ] Version bumped in Cargo.toml
+- [ ] Security audit (for major releases)
+- [ ] Migration guide (for breaking changes)
+
+**Release**:
+- [ ] Git tag created (`v1.2.3`)
+- [ ] Crates.io publish
+- [ ] GitHub release with binaries
+- [ ] Docker images built and pushed
+- [ ] Announcement blog post
+- [ ] Social media announcements
+- [ ] Mailing list notification
+
+**Post-Release**:
+- [ ] Monitor for issues
+- [ ] Update documentation site
+- [ ] Close milestone on GitHub
+
+---
+
+## Funding Model
+
+### Revenue Streams
+
+**1. Commercial Offerings** (~60% of funding):
+- Meshara Cloud (managed service): $50,000/year
+- Enterprise support contracts: $100,000/year
+- Training and consulting: $30,000/year
+
+**2. Sponsorships** (~30% of funding):
+- Corporate sponsors (Gold: $25k, Silver: $10k, Bronze: $5k)
+- GitHub Sponsors
+- Open Collective
+
+**3. Grants** (~10% of funding):
+- NLnet Foundation
+- Mozilla Open Source Support (MOSS)
+- EU Horizon grants
+- Sovereign Tech Fund
+
+**Total Target**: $250,000/year
+
+### Budget Allocation
+
+**Annual Budget** ($250,000):
+- **Development**: $150,000 (60%)
+  - 2 full-time engineers
+  - Part-time contributors
+- **Infrastructure**: $30,000 (12%)
+  - CI/CD, testing infrastructure
+  - Documentation hosting
+  - Community tools
+- **Security**: $40,000 (16%)
+  - Annual security audit
+  - Bug bounty program
+- **Community**: $20,000 (8%)
+  - Conferences, meetups
+  - Swag, community rewards
+- **Operations**: $10,000 (4%)
+  - Legal, accounting
+  - Domain names, services
+
+---
+
+## Succession Planning
+
+### Bus Factor Mitigation
+
+**Current Risk**: If key maintainer leaves, project stalls.
+
+**Mitigation**:
+1. **Documentation**: Everything documented (no tribal knowledge)
+2. **Multiple Maintainers**: At least 3 people per critical area
+3. **Knowledge Sharing**: Pair programming, code reviews
+4. **Onboarding**: Clear path from contributor to maintainer
+5. **Redundancy**: No single point of failure
+
+**Maintainer Emeritus**:
+- Inactive maintainers become "emeritus"
+- Retain advisory role
+- Can return to active status
+
+---
+
+## Long-Term Roadmap (5 Years)
+
+### Year 1 (2026)
+- **Q1**: Post-MVP Phase 1-2 complete
+- **Q2**: Post-MVP Phase 3-4 complete
+- **Q3**: Post-MVP Phase 5-6 complete
+- **Q4**: v1.0 production release
+
+### Year 2 (2027)
+- **Q1**: 1,000+ production nodes
+- **Q2**: Mobile SDKs widely adopted
+- **Q3**: Major enterprise customer
+- **Q4**: v2.0 with advanced features
+
+### Year 3 (2028)
+- **Q1**: 10,000+ production nodes
+- **Q2**: Multiple commercial integrations
+- **Q3**: Research partnerships established
+- **Q4**: Sustainable $500k/year funding
+
+### Year 4 (2029)
+- **Q1**: 100,000+ production nodes
+- **Q2**: Industry standard for secure messaging
+- **Q3**: Published standards (IETF RFC)
+- **Q4**: v3.0 with protocol extensions
+
+### Year 5 (2030)
+- **Q1**: 1,000,000+ production nodes
+- **Q2**: Global ecosystem
+- **Q3**: Academic citations
+- **Q4**: Long-term sustainability achieved
+
+---
+
+## Success Criteria
+
+**Sustainability Complete When**:
+- ✓ Governance charter ratified
+- ✓ RFC process documented and tested
+- ✓ Contribution guidelines complete
+- ✓ Security policy established
+- ✓ CVE process tested with practice run
+- ✓ Community >1,000 members
+- ✓ Funding >$250k/year sustained
+- ✓ 50+ contributors
+- ✓ 3+ core maintainers per critical area
+- ✓ Annual security audits funded
+- ✓ 5-year roadmap approved
+
+**Long-Term Health Indicators**:
+- Consistent release cadence
+- Growing contributor base
+- Declining bus factor
+- Increasing commercial adoption
+- Positive community sentiment
+- Financial reserves >1 year runway
+
+---
+
+**Last Updated**: 2025-12-23
+**Owner**: Steering Committee
+**Status**: Planning
+**Prerequisites**: All previous phases complete
+**Duration**: Ongoing
+**Budget**: $60,000/year + operational funding
