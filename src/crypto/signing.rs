@@ -138,6 +138,27 @@ mod tests {
     }
 
     #[test]
+    fn test_sign_empty_message() {
+        let identity = Identity::generate();
+        let public_key = identity.public_key();
+
+        // Empty message should sign and verify successfully
+        let signature = sign_message(&identity, b"");
+        assert!(verify_signature(&public_key, b"", &signature));
+    }
+
+    #[test]
+    fn test_sign_large_message() {
+        let identity = Identity::generate();
+        let public_key = identity.public_key();
+
+        // Sign 1MB message
+        let large_message = vec![0x42u8; 1024 * 1024];
+        let signature = sign_message(&identity, &large_message);
+        assert!(verify_signature(&public_key, &large_message, &signature));
+    }
+
+    #[test]
     fn test_various_message_sizes() {
         let identity = Identity::generate();
         let public_key = identity.public_key();
@@ -154,5 +175,60 @@ mod tests {
         let large_message = vec![0u8; 10000];
         let sig = sign_message(&identity, &large_message);
         assert!(verify_signature(&public_key, &large_message, &sig));
+    }
+
+    // Property-based tests using proptest
+    #[cfg(test)]
+    mod proptests {
+        use super::*;
+        use proptest::prelude::*;
+
+        proptest! {
+            /// Property: Signing and verifying any message should always succeed
+            #[test]
+            fn prop_sign_verify_roundtrip(message: Vec<u8>) {
+                let identity = Identity::generate();
+                let public_key = identity.public_key();
+                let signature = sign_message(&identity, &message);
+                prop_assert!(verify_signature(&public_key, &message, &signature));
+            }
+
+            /// Property: Different messages should produce different signatures
+            #[test]
+            fn prop_different_messages_different_signatures(
+                message1: Vec<u8>,
+                message2: Vec<u8>
+            ) {
+                prop_assume!(message1 != message2);
+                let identity = Identity::generate();
+                let sig1 = sign_message(&identity, &message1);
+                let sig2 = sign_message(&identity, &message2);
+                prop_assert_ne!(sig1, sig2);
+            }
+
+            /// Property: Verifying with wrong message should always fail
+            #[test]
+            fn prop_verify_wrong_message_fails(
+                original: Vec<u8>,
+                tampered: Vec<u8>
+            ) {
+                prop_assume!(original != tampered);
+                let identity = Identity::generate();
+                let public_key = identity.public_key();
+                let signature = sign_message(&identity, &original);
+                prop_assert!(!verify_signature(&public_key, &tampered, &signature));
+            }
+
+            /// Property: Signature serialization roundtrip preserves signature
+            #[test]
+            fn prop_signature_serialization_roundtrip(message: Vec<u8>) {
+                let identity = Identity::generate();
+                let public_key = identity.public_key();
+                let signature = sign_message(&identity, &message);
+                let bytes = signature.to_bytes();
+                let deserialized = Signature::from_bytes(&bytes).unwrap();
+                prop_assert!(verify_signature(&public_key, &message, &deserialized));
+            }
+        }
     }
 }

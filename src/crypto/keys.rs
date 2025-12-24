@@ -468,7 +468,7 @@ mod tests {
     }
 
     #[test]
-    fn test_deterministic_generation() {
+    fn test_identity_from_seed() {
         let seed = [42u8; 32];
         let identity1 = Identity::from_seed(&seed);
         let identity2 = Identity::from_seed(&seed);
@@ -477,6 +477,54 @@ mod tests {
         let pk2 = identity2.public_key();
 
         assert_eq!(pk1.fingerprint(), pk2.fingerprint());
+    }
+
+    #[test]
+    fn test_identity_different_seeds() {
+        let seed_a = [1u8; 32];
+        let seed_b = [2u8; 32];
+
+        let identity_a = Identity::from_seed(&seed_a);
+        let identity_b = Identity::from_seed(&seed_b);
+
+        let pk_a = identity_a.public_key();
+        let pk_b = identity_b.public_key();
+
+        assert_ne!(pk_a.fingerprint(), pk_b.fingerprint());
+    }
+
+    #[test]
+    fn test_fingerprint_generation() {
+        let identity = Identity::generate();
+        let public_key = identity.public_key();
+
+        let fingerprint1 = public_key.fingerprint();
+        let fingerprint2 = public_key.fingerprint();
+
+        // Fingerprint is deterministic
+        assert_eq!(fingerprint1, fingerprint2);
+
+        // Fingerprint is human-readable (hex string)
+        assert_eq!(fingerprint1.len(), 64); // 32 bytes * 2 hex chars
+        assert!(fingerprint1.chars().all(|c| c.is_ascii_hexdigit()));
+
+        // Fingerprint only contains lowercase hex
+        assert!(fingerprint1
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit()));
+    }
+
+    #[test]
+    fn test_public_key_extraction() {
+        let identity = Identity::generate();
+        let public_key = identity.public_key();
+
+        // Verify public key can be extracted
+        assert_eq!(public_key.to_bytes().len(), 64); // 32 + 32 bytes
+
+        // Verify fingerprint is valid
+        let fingerprint = public_key.fingerprint();
+        assert_eq!(fingerprint.len(), 64);
     }
 
     #[test]

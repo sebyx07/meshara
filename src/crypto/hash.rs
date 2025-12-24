@@ -169,6 +169,38 @@ mod tests {
     use crate::crypto::Identity;
 
     #[test]
+    fn test_hash_deterministic() {
+        let data = b"Test message";
+        let hash1 = hash_message(data);
+        let hash2 = hash_message(data);
+
+        // Hash is deterministic - same input produces same hash
+        assert_eq!(hash1, hash2);
+    }
+
+    #[test]
+    fn test_hash_length() {
+        let data = b"Any input";
+        let hash = hash_message(data);
+
+        // Hash is always 32 bytes
+        assert_eq!(hash.as_bytes().len(), 32);
+    }
+
+    #[test]
+    fn test_hash_empty() {
+        // Hash empty input
+        let hash = hash_message(b"");
+
+        // Should succeed with valid hash
+        assert_eq!(hash.as_bytes().len(), 32);
+
+        // Empty input should hash deterministically
+        let hash2 = hash_message(b"");
+        assert_eq!(hash, hash2);
+    }
+
+    #[test]
     fn test_hash_message() {
         let data = b"Test message";
         let hash1 = hash_message(data);
@@ -280,5 +312,65 @@ mod tests {
         let node_id = hash_public_key(&identity.public_key());
         let display = format!("{}", node_id);
         assert_eq!(display, node_id.to_hex());
+    }
+
+    // Property-based tests using proptest
+    #[cfg(test)]
+    mod proptests {
+        use super::*;
+        use proptest::prelude::*;
+
+        proptest! {
+            /// Property: Hash should be deterministic
+            #[test]
+            fn prop_hash_deterministic(data: Vec<u8>) {
+                let hash1 = hash_message(&data);
+                let hash2 = hash_message(&data);
+                prop_assert_eq!(hash1, hash2);
+            }
+
+            /// Property: Hash should always be 32 bytes
+            #[test]
+            fn prop_hash_length(data: Vec<u8>) {
+                let hash = hash_message(&data);
+                prop_assert_eq!(hash.as_bytes().len(), 32);
+            }
+
+            /// Property: Different inputs should produce different hashes
+            #[test]
+            fn prop_different_inputs_different_hashes(data1: Vec<u8>, data2: Vec<u8>) {
+                prop_assume!(data1 != data2);
+                let hash1 = hash_message(&data1);
+                let hash2 = hash_message(&data2);
+                prop_assert_ne!(hash1, hash2);
+            }
+
+            /// Property: MessageId hex roundtrip should preserve value
+            #[test]
+            fn prop_message_id_hex_roundtrip(data: Vec<u8>) {
+                let message_id = hash_message(&data);
+                let hex = message_id.to_hex();
+                let parsed = MessageId::from_hex(&hex).unwrap();
+                prop_assert_eq!(message_id, parsed);
+            }
+
+            /// Property: XOR distance should be symmetric
+            #[test]
+            fn prop_xor_distance_symmetric(bytes1: [u8; 32], bytes2: [u8; 32]) {
+                let id1 = NodeId::from_bytes(bytes1);
+                let id2 = NodeId::from_bytes(bytes2);
+                let dist1 = id1.xor_distance(&id2);
+                let dist2 = id2.xor_distance(&id1);
+                prop_assert_eq!(dist1, dist2);
+            }
+
+            /// Property: XOR distance to self should be zero
+            #[test]
+            fn prop_xor_distance_self_is_zero(bytes: [u8; 32]) {
+                let id = NodeId::from_bytes(bytes);
+                let dist = id.xor_distance(&id);
+                prop_assert_eq!(dist, [0u8; 32]);
+            }
+        }
     }
 }

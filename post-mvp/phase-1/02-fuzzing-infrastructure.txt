@@ -1,0 +1,658 @@
+# POST-MVP PHASE 1: FUZZING INFRASTRUCTURE
+
+## Overview
+
+Continuous fuzzing is essential for finding edge cases, crashes, and security vulnerabilities that traditional testing misses. Fuzzing should be integrated into CI/CD and run continuously via OSS-Fuzz.
+
+**Objective**: Achieve comprehensive fuzzing coverage of all parsing, cryptographic, and protocol handling code.
+
+---
+
+## Fuzzing Targets
+
+### High-Priority Targets
+
+**Protocol Buffer Parsing**:
+- BaseMessage deserialization
+- PrivateMessagePayload parsing
+- BroadcastPayload parsing
+- UpdatePackage parsing
+- QueryMessage/ResponseMessage parsing
+- Malformed protobuf handling
+- Oversized messages
+- Nested message depth limits
+
+**Cryptographic Operations**:
+- Signature verification (malformed signatures)
+- Encryption/decryption (malformed ciphertext)
+- Key derivation (edge case passphrases)
+- Hash computation (large inputs)
+- Public key validation (invalid curve points)
+
+**Network Protocol**:
+- TLS handshake parsing
+- Message framing (length prefixes, chunking)
+- HTTP/2 framing (if enabled)
+- ALPN negotiation
+- Connection state machine
+
+**Routing Logic**:
+- Routing table updates
+- Gossip protocol message processing
+- DHT operations (if implemented)
+- Onion routing path construction (if implemented)
+
+**Storage Operations**:
+- Configuration file parsing
+- Encrypted keystore reading
+- Update package storage/retrieval
+
+---
+
+## Fuzzing Tools
+
+### cargo-fuzz (libFuzzer)
+
+**Setup**:
+```bash
+# Install cargo-fuzz
+cargo install cargo-fuzz
+
+# Create fuzz target
+cargo fuzz init
+
+# Add fuzz targets
+cargo fuzz add fuzz_protobuf_parsing
+cargo fuzz add fuzz_signature_verification
+cargo fuzz add fuzz_encryption
+```
+
+**Example Fuzz Target** (fuzz/fuzz_targets/fuzz_protobuf_parsing.rs):
+```rust
+#![no_main]
+use libfuzzer_sys::fuzz_target;
+use prost::Message;
+use meshara::protocol::BaseMessage;
+
+fuzz_target!(|data: &[u8]| {
+    // Try to parse arbitrary bytes as BaseMessage
+    let _ = BaseMessage::decode(data);
+});
+```
+
+**Running Locally**:
+```bash
+# Run specific fuzz target
+cargo fuzz run fuzz_protobuf_parsing
+
+# Run with corpus
+cargo fuzz run fuzz_protobuf_parsing corpus/
+
+# Run with sanitizers
+cargo fuzz run fuzz_protobuf_parsing --sanitizer=address
+cargo fuzz run fuzz_protobuf_parsing --sanitizer=memory
+
+# Minimize corpus
+cargo fuzz cmin fuzz_protobuf_parsing
+```
+
+### AFL++ (American Fuzzy Lop)
+
+**Setup**:
+```bash
+# Install AFL++
+cargo install afl
+
+# Build with AFL instrumentation
+cargo afl build
+
+# Run AFL fuzzer
+cargo afl fuzz -i input_corpus/ -o findings/ target/debug/fuzz_target
+```
+
+**Use Case**: Complementary to libFuzzer, good for different code paths.
+
+### Honggfuzz
+
+**Setup**:
+```bash
+# Install honggfuzz
+cargo install honggfuzz
+
+# Create fuzz target
+mkdir hfuzz_target
+```
+
+**Use Case**: Hardware-assisted fuzzing, good performance on modern CPUs.
+
+---
+
+## OSS-Fuzz Integration
+
+### What is OSS-Fuzz?
+
+Google's **continuous fuzzing service** for open source projects:
+- Runs fuzzers 24/7 on Google infrastructure
+- Automatic bug reporting
+- Coverage tracking
+- Corpus management
+- Free for open source projects
+
+### OSS-Fuzz Application
+
+**Eligibility**:
+- Open source project (Apache 2.0, MIT, GPL, etc.)
+- Significant user base or security impact
+- Active maintenance
+- Clear security implications
+
+**Application Process**:
+1. **Create Integration PR**: Submit PR to https://github.com/google/oss-fuzz
+2. **Project Configuration**: Add `meshara` directory with config
+3. **Dockerfile**: Define build environment
+4. **build.sh**: Build fuzz targets
+5. **project.yaml**: Project metadata
+
+**Example project.yaml**:
+```yaml
+homepage: "https://github.com/meshara/meshara"
+language: rust
+primary_contact: "security@meshara.org"
+auto_ccs:
+  - "maintainer1@example.com"
+  - "maintainer2@example.com"
+sanitizers:
+  - address
+  - memory
+  - undefined
+fuzzing_engines:
+  - libfuzzer
+  - afl
+```
+
+**Example Dockerfile**:
+```dockerfile
+FROM gcr.io/oss-fuzz-base/base-builder-rust
+RUN apt-get update && apt-get install -y protobuf-compiler
+COPY . $SRC/meshara
+WORKDIR $SRC/meshara
+COPY build.sh $SRC/
+```
+
+**Example build.sh**:
+```bash
+#!/bin/bash -eu
+
+cd $SRC/meshara
+
+# Build fuzz targets
+cargo fuzz build --release
+
+# Copy fuzz targets to output
+cp fuzz/target/x86_64-unknown-linux-gnu/release/fuzz_* $OUT/
+
+# Copy seed corpus
+cp -r fuzz/corpus/* $OUT/
+```
+
+### OSS-Fuzz Monitoring
+
+**Bug Reports**:
+- Crashes emailed to auto_ccs contacts
+- Issues filed on GitHub (if configured)
+- 90-day disclosure deadline for unfixed bugs
+
+**Coverage Tracking**:
+- View coverage at https://oss-fuzz.com/coverage/meshara
+- Identify uncovered code paths
+- Expand fuzz targets to improve coverage
+
+**Corpus Management**:
+- OSS-Fuzz automatically minimizes corpus
+- Downloads corpus for local testing
+- Shares interesting inputs between projects
+
+---
+
+## Fuzz Target Development
+
+### Comprehensive Fuzz Targets
+
+**1. Protocol Buffer Parsing** (fuzz_protobuf.rs):
+```rust
+#![no_main]
+use libfuzzer_sys::fuzz_target;
+use prost::Message;
+use meshara::protocol::*;
+
+fuzz_target!(|data: &[u8]| {
+    // Fuzz all message types
+    let _ = BaseMessage::decode(data);
+    let _ = PrivateMessagePayload::decode(data);
+    let _ = BroadcastPayload::decode(data);
+    let _ = UpdatePackage::decode(data);
+    let _ = QueryMessage::decode(data);
+    let _ = ResponseMessage::decode(data);
+});
+```
+
+**2. Signature Verification** (fuzz_signature.rs):
+```rust
+#![no_main]
+use libfuzzer_sys::fuzz_target;
+use meshara::crypto::{Identity, verify_signature};
+
+fuzz_target!(|data: &[u8]| {
+    if data.len() < 96 { return; }
+
+    // Split data into public key (32), message (variable), signature (64)
+    let (pubkey_bytes, rest) = data.split_at(32);
+    if rest.len() < 64 { return; }
+    let (message, sig_bytes) = rest.split_at(rest.len() - 64);
+
+    // Try to verify arbitrary signature
+    let _ = verify_signature(pubkey_bytes, message, sig_bytes);
+});
+```
+
+**3. Encryption/Decryption** (fuzz_encryption.rs):
+```rust
+#![no_main]
+use libfuzzer_sys::fuzz_target;
+use meshara::crypto::{encrypt_message, decrypt_message};
+
+fuzz_target!(|data: &[u8]| {
+    if data.len() < 32 { return; }
+
+    // Split into key material and ciphertext
+    let (key_bytes, ciphertext) = data.split_at(32);
+
+    // Try to decrypt arbitrary data
+    let _ = decrypt_message(key_bytes, ciphertext);
+});
+```
+
+**4. Network Message Framing** (fuzz_framing.rs):
+```rust
+#![no_main]
+use libfuzzer_sys::fuzz_target;
+use meshara::network::parse_message_frame;
+
+fuzz_target!(|data: &[u8]| {
+    // Fuzz message frame parsing (length prefix + payload)
+    let _ = parse_message_frame(data);
+});
+```
+
+**5. Configuration Parsing** (fuzz_config.rs):
+```rust
+#![no_main]
+use libfuzzer_sys::fuzz_target;
+use meshara::storage::parse_config;
+
+fuzz_target!(|data: &[u8]| {
+    // Fuzz configuration file parsing
+    if let Ok(s) = std::str::from_utf8(data) {
+        let _ = parse_config(s);
+    }
+});
+```
+
+**6. Routing Table Updates** (fuzz_routing.rs):
+```rust
+#![no_main]
+use libfuzzer_sys::fuzz_target;
+use meshara::routing::RoutingTable;
+
+fuzz_target!(|data: &[u8]| {
+    let mut table = RoutingTable::new();
+
+    // Fuzz routing table operations
+    let _ = table.update_from_bytes(data);
+});
+```
+
+### Structured Fuzzing with arbitrary
+
+For complex input structures, use `arbitrary` crate:
+
+```rust
+#![no_main]
+use libfuzzer_sys::fuzz_target;
+use arbitrary::Arbitrary;
+
+#[derive(Arbitrary, Debug)]
+struct FuzzInput {
+    message_type: u8,
+    sender_id: [u8; 32],
+    recipient_id: [u8; 32],
+    payload: Vec<u8>,
+    timestamp: u64,
+}
+
+fuzz_target!(|input: FuzzInput| {
+    // Use structured input for fuzzing
+    let _ = process_message(&input);
+});
+```
+
+---
+
+## Corpus Management
+
+### Seed Corpus
+
+**Create Initial Corpus**:
+- Valid protocol messages (minimal, maximal, edge cases)
+- Known edge cases from testing
+- Real-world message samples (anonymized)
+- Boundary values (empty, max size, etc.)
+
+**Corpus Structure**:
+```
+fuzz/corpus/
+├── fuzz_protobuf/
+│   ├── valid_private_message
+│   ├── valid_broadcast
+│   ├── empty_message
+│   ├── max_size_message
+│   └── malformed_*
+├── fuzz_signature/
+│   ├── valid_signature
+│   ├── invalid_signature
+│   └── edge_cases_*
+└── fuzz_encryption/
+    ├── valid_ciphertext
+    └── malformed_*
+```
+
+**Generating Seed Corpus**:
+```rust
+// tests/corpus_generation.rs
+#[test]
+fn generate_seed_corpus() {
+    use meshara::protocol::*;
+    use prost::Message;
+
+    // Create valid messages
+    let msg = BaseMessage {
+        version: 1,
+        message_type: Some(base_message::MessageType::PrivateMessage(
+            PrivateMessagePayload { /* ... */ }
+        )),
+    };
+
+    // Write to corpus
+    let bytes = msg.encode_to_vec();
+    std::fs::write("fuzz/corpus/fuzz_protobuf/valid_private_message", bytes).unwrap();
+
+    // Generate edge cases
+    // ...
+}
+```
+
+### Corpus Minimization
+
+**Minimize After Fuzzing**:
+```bash
+# Minimize corpus to smallest set with same coverage
+cargo fuzz cmin fuzz_protobuf_parsing
+
+# Minimize individual testcase
+cargo fuzz tmin fuzz_protobuf_parsing corpus/crash-abc123
+```
+
+**Automated Minimization**:
+- OSS-Fuzz automatically minimizes corpus
+- CI/CD job to periodically minimize local corpus
+- Keep minimized corpus in git for reproducibility
+
+---
+
+## Coverage-Guided Fuzzing
+
+### Measuring Coverage
+
+**Generate Coverage Report**:
+```bash
+# Build with coverage instrumentation
+RUSTFLAGS="-C instrument-coverage" cargo build
+
+# Run fuzz targets
+cargo fuzz run fuzz_protobuf_parsing -- -runs=1000000
+
+# Generate coverage report
+llvm-profdata merge -sparse default_*.profraw -o fuzz.profdata
+llvm-cov show target/x86_64-unknown-linux-gnu/release/fuzz_protobuf_parsing \
+    -instr-profile=fuzz.profdata \
+    -format=html -output-dir=coverage/
+```
+
+**Coverage Goals**:
+- **Protocol parsing**: 100% coverage (all branches)
+- **Crypto operations**: 95%+ coverage
+- **Network handling**: 90%+ coverage
+- **Routing logic**: 85%+ coverage
+
+### Improving Coverage
+
+**Strategies**:
+1. **Add seed corpus** for uncovered paths
+2. **Structured fuzzing** with `arbitrary` for complex inputs
+3. **Dictionary hints** for magic bytes, keywords
+4. **Custom mutators** for domain-specific logic
+5. **Differential fuzzing** (compare with reference implementation)
+
+**Example Dictionary** (fuzz/dictionary.dict):
+```
+# Protocol magic bytes
+"MESH"
+"\x00\x01\x00\x00"
+
+# Message types
+"private"
+"broadcast"
+"update"
+"query"
+
+# Common sizes
+"\x00\x00\x00\x00"
+"\xff\xff\xff\xff"
+```
+
+---
+
+## Crash Triage
+
+### Handling Crashes
+
+**When Fuzzer Finds Crash**:
+1. **Reproduce**: Run crash input locally
+2. **Minimize**: Use `cargo fuzz tmin` to minimize testcase
+3. **Analyze**: Debug with AddressSanitizer/MemorySanitizer
+4. **Fix**: Implement fix with regression test
+5. **Verify**: Re-run fuzzer to ensure fix
+6. **Update Corpus**: Add minimized testcase to regression suite
+
+**Example Crash Investigation**:
+```bash
+# Reproduce crash
+cargo fuzz run fuzz_protobuf_parsing corpus/crash-abc123
+
+# Run with AddressSanitizer for detailed error
+ASAN_OPTIONS=detect_leaks=1:symbolize=1 cargo fuzz run fuzz_protobuf_parsing corpus/crash-abc123
+
+# Minimize crash input
+cargo fuzz tmin fuzz_protobuf_parsing corpus/crash-abc123
+
+# Add to regression tests
+cp corpus/crash-abc123 tests/regression/protobuf_crash_abc123
+```
+
+### Crash Categories
+
+**Common Crash Types**:
+- **Panic**: Explicit panic in code (unwrap, assert, etc.)
+- **Out-of-bounds**: Array/slice access beyond bounds
+- **Integer overflow**: Arithmetic overflow in debug mode
+- **Stack overflow**: Unbounded recursion
+- **Heap corruption**: Use-after-free, double-free (rare in Rust)
+- **Memory leak**: Excessive allocation (detected by LeakSanitizer)
+
+**Severity Assessment**:
+- **Critical**: Potential for code execution, key extraction
+- **High**: Denial of service, crash
+- **Medium**: Memory leak, performance degradation
+- **Low**: Non-exploitable panic
+
+---
+
+## CI/CD Integration
+
+### GitHub Actions Workflow
+
+**.github/workflows/fuzzing.yml**:
+```yaml
+name: Continuous Fuzzing
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: '0 */6 * * *'  # Every 6 hours
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        target:
+          - fuzz_protobuf_parsing
+          - fuzz_signature_verification
+          - fuzz_encryption
+          - fuzz_network_framing
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Install Rust nightly
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: nightly
+          override: true
+
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz
+
+      - name: Run fuzzer (time-limited)
+        run: |
+          cargo fuzz run ${{ matrix.target }} -- -max_total_time=300
+        continue-on-error: true
+
+      - name: Upload crashes
+        if: failure()
+        uses: actions/upload-artifact@v3
+        with:
+          name: fuzz-crashes-${{ matrix.target }}
+          path: fuzz/artifacts/${{ matrix.target }}/
+```
+
+### Nightly Fuzzing
+
+**Long-Running Fuzz Jobs**:
+```yaml
+# Separate workflow for longer fuzzing runs
+name: Nightly Fuzzing
+
+on:
+  schedule:
+    - cron: '0 2 * * *'  # 2 AM daily
+
+jobs:
+  fuzz-extended:
+    runs-on: ubuntu-latest
+    timeout-minutes: 480  # 8 hours
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Run extended fuzzing
+        run: |
+          cargo fuzz run fuzz_protobuf_parsing -- -max_total_time=28800
+
+      - name: Report crashes to issue tracker
+        if: failure()
+        uses: actions/github-script@v6
+        with:
+          script: |
+            github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: 'Fuzzing crash detected',
+              body: 'Nightly fuzzing run found crashes. See artifacts.',
+              labels: ['security', 'fuzzing']
+            })
+```
+
+---
+
+## Performance Optimization
+
+### Fuzzing Efficiency
+
+**Improving Fuzz Performance**:
+1. **Minimize corpus**: Smaller corpus = faster iterations
+2. **Use dictionaries**: Guide fuzzer to interesting inputs
+3. **Parallel fuzzing**: Run multiple fuzz jobs with `-jobs=N`
+4. **Focus on hot paths**: Prioritize high-value targets
+5. **Profile-guided optimization**: Build with PGO for faster execution
+
+**Parallelization**:
+```bash
+# Run 8 parallel fuzzing jobs
+cargo fuzz run fuzz_protobuf_parsing -- -jobs=8 -workers=8
+```
+
+**Distributed Fuzzing**:
+- Use OSS-Fuzz for continuous fuzzing infrastructure
+- Run local fuzzing on CI/CD runners
+- Coordinate corpus sharing between instances
+
+---
+
+## Success Criteria
+
+**Fuzzing Infrastructure Complete When**:
+- ✓ 6+ fuzz targets covering all parsing/crypto code
+- ✓ OSS-Fuzz integration approved and running
+- ✓ Coverage >90% for protocol parsing, >85% for crypto
+- ✓ CI/CD runs fuzzing on every PR
+- ✓ Nightly extended fuzzing runs 8+ hours
+- ✓ Corpus minimized and checked into git
+- ✓ Crash triage process documented
+- ✓ No crashes found in 48-hour continuous fuzzing run
+
+**Ongoing Metrics**:
+- Fuzzing iterations per second
+- Code coverage percentage
+- Crashes found per week
+- Time to triage and fix crashes
+
+---
+
+## Resources
+
+- **cargo-fuzz Book**: https://rust-fuzz.github.io/book/
+- **OSS-Fuzz Documentation**: https://google.github.io/oss-fuzz/
+- **libFuzzer Tutorial**: https://llvm.org/docs/LibFuzzer.html
+- **Fuzzing Rust Code (Rust Security WG)**: https://github.com/rust-fuzz
+
+---
+
+**Last Updated**: 2025-12-23
+**Owner**: Security Team
+**Status**: Planning
+**Prerequisites**: MVP complete, security audit in progress
+**Estimated Duration**: 2-3 weeks setup + ongoing
+**Budget**: $10,000 - $20,000 (engineer time, infrastructure)

@@ -326,4 +326,55 @@ mod tests {
         assert_eq!(decrypt_message(&recipient, &encrypted1).unwrap(), plaintext);
         assert_eq!(decrypt_message(&recipient, &encrypted2).unwrap(), plaintext);
     }
+
+    // Property-based tests using proptest
+    #[cfg(test)]
+    mod proptests {
+        use super::*;
+        use proptest::prelude::*;
+
+        proptest! {
+            /// Property: Encrypt-decrypt roundtrip should always preserve plaintext
+            #[test]
+            fn prop_encrypt_decrypt_roundtrip(plaintext: Vec<u8>) {
+                let sender = Identity::generate();
+                let recipient = Identity::generate();
+                let recipient_pubkey = recipient.public_key();
+
+                let encrypted = encrypt_for_recipient(&sender, &recipient_pubkey, &plaintext).unwrap();
+                let decrypted = decrypt_message(&recipient, &encrypted).unwrap();
+
+                prop_assert_eq!(decrypted, plaintext);
+            }
+
+            /// Property: Wrong recipient should never decrypt successfully
+            #[test]
+            fn prop_wrong_recipient_fails(plaintext: Vec<u8>) {
+                let sender = Identity::generate();
+                let recipient1 = Identity::generate();
+                let recipient2 = Identity::generate();
+                let recipient1_pubkey = recipient1.public_key();
+
+                let encrypted = encrypt_for_recipient(&sender, &recipient1_pubkey, &plaintext).unwrap();
+                let result = decrypt_message(&recipient2, &encrypted);
+
+                prop_assert!(result.is_err());
+            }
+
+            /// Property: Encrypted message serialization roundtrip should preserve decryptability
+            #[test]
+            fn prop_encrypted_message_serialization(plaintext: Vec<u8>) {
+                let sender = Identity::generate();
+                let recipient = Identity::generate();
+                let recipient_pubkey = recipient.public_key();
+
+                let encrypted = encrypt_for_recipient(&sender, &recipient_pubkey, &plaintext).unwrap();
+                let bytes = encrypted.to_bytes();
+                let deserialized = EncryptedMessage::from_bytes(&bytes).unwrap();
+                let decrypted = decrypt_message(&recipient, &deserialized).unwrap();
+
+                prop_assert_eq!(decrypted, plaintext);
+            }
+        }
+    }
 }
