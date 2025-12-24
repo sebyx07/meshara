@@ -15,7 +15,7 @@ use thiserror::Error;
 ///
 /// This is the public-facing error type returned by all library APIs.
 /// Each variant wraps a more specific subsystem error.
-#[derive(Error, Debug)]
+#[derive(Error, Debug, Clone)]
 pub enum MesharaError {
     /// Cryptographic operation error
     #[error("Cryptography error: {0}")]
@@ -278,7 +278,7 @@ pub enum ProtocolError {
 }
 
 /// Storage and file system errors
-#[derive(Error, Debug)]
+#[derive(Error, Debug, Clone)]
 pub enum StorageError {
     /// File not found at expected path
     ///
@@ -348,11 +348,10 @@ pub enum StorageError {
     /// Can indicate disk errors, network file system issues, etc.
     ///
     /// This error MAY be retryable depending on underlying cause.
-    #[error("I/O error: {source}")]
+    #[error("I/O error: {message}")]
     IoError {
-        /// The underlying I/O error
-        #[from]
-        source: std::io::Error,
+        /// Description of the I/O error
+        message: String,
     },
 
     /// Serialization to storage format failed
@@ -475,6 +474,22 @@ pub enum NetworkError {
         /// Reason why receive failed
         reason: String,
     },
+}
+
+impl From<std::io::Error> for StorageError {
+    fn from(error: std::io::Error) -> Self {
+        Self::IoError {
+            message: error.to_string(),
+        }
+    }
+}
+
+impl From<std::io::Error> for MesharaError {
+    fn from(error: std::io::Error) -> Self {
+        Self::Storage(StorageError::IoError {
+            message: error.to_string(),
+        })
+    }
 }
 
 /// Message routing errors
@@ -1049,7 +1064,7 @@ mod tests {
     #[test]
     fn test_is_retryable_storage_io_yes() {
         let io_err = std::io::Error::new(std::io::ErrorKind::TimedOut, "timed out");
-        let err = MesharaError::Storage(StorageError::IoError { source: io_err });
+        let err = MesharaError::Storage(StorageError::from(io_err));
         assert!(err.is_retryable());
     }
 

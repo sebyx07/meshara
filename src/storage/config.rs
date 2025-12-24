@@ -151,7 +151,7 @@ impl NodeConfig {
 pub fn save_config(path: &Path, config: &NodeConfig) -> Result<()> {
     // Create parent directory if it doesn't exist
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| StorageError::IoError { source: e })?;
+        std::fs::create_dir_all(parent).map_err(StorageError::from)?;
     }
 
     // Serialize to pretty JSON for human readability
@@ -161,7 +161,7 @@ pub fn save_config(path: &Path, config: &NodeConfig) -> Result<()> {
         })?;
 
     // Write to file
-    std::fs::write(path, json).map_err(|e| StorageError::IoError { source: e })?;
+    std::fs::write(path, json).map_err(StorageError::from)?;
 
     Ok(())
 }
@@ -197,7 +197,7 @@ pub fn load_config(path: &Path) -> Result<NodeConfig> {
     }
 
     // Read file
-    let json = std::fs::read_to_string(path).map_err(|e| StorageError::IoError { source: e })?;
+    let json = std::fs::read_to_string(path).map_err(StorageError::from)?;
 
     // Deserialize
     let config: NodeConfig =

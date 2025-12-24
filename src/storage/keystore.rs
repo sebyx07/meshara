@@ -14,7 +14,7 @@ use chacha20poly1305::{
     ChaCha20Poly1305, Nonce,
 };
 use rand::RngCore;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use zeroize::Zeroize;
 
 /// Magic bytes to identify Meshara identity files
@@ -74,7 +74,7 @@ const IDENTITY_DATA_LEN: usize = 64;
 pub fn save_identity(path: &Path, identity: &Identity, passphrase: &str) -> Result<()> {
     // Create parent directory if it doesn't exist
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| StorageError::IoError { source: e })?;
+        std::fs::create_dir_all(parent)?;
     }
 
     // Generate random salt
@@ -151,17 +151,15 @@ pub fn save_identity(path: &Path, identity: &Identity, passphrase: &str) -> Resu
     file_data.extend_from_slice(&ciphertext);
 
     // Write to file
-    std::fs::write(path, &file_data).map_err(|e| StorageError::IoError { source: e })?;
+    std::fs::write(path, &file_data)?;
 
     // Set file permissions to user-read-only (Unix: 0600)
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let mut perms = std::fs::metadata(path)
-            .map_err(|e| StorageError::IoError { source: e })?
-            .permissions();
+        let mut perms = std::fs::metadata(path)?.permissions();
         perms.set_mode(0o600);
-        std::fs::set_permissions(path, perms).map_err(|e| StorageError::IoError { source: e })?;
+        std::fs::set_permissions(path, perms)?;
     }
 
     // Zeroize sensitive data
@@ -205,7 +203,7 @@ pub fn load_identity(path: &Path, passphrase: &str) -> Result<Identity> {
     }
 
     // Read file
-    let file_data = std::fs::read(path).map_err(|e| StorageError::IoError { source: e })?;
+    let file_data = std::fs::read(path)?;
 
     // Verify minimum size
     let min_size = 8 + 4 + SALT_LEN + NONCE_LEN + TAG_LEN;
@@ -362,6 +360,120 @@ pub fn identity_exists(path: &Path) -> bool {
     }
 
     false
+}
+
+/// Keystore manages persistent identity storage
+///
+/// This is a wrapper around the keystore functions that provides an
+/// async-friendly API for use with the Node.
+pub struct Keystore {
+    storage_path: PathBuf,
+}
+
+impl Keystore {
+    /// Create a new keystore with the given storage path
+    ///
+    /// # Arguments
+    ///
+    /// * `storage_path` - Directory where identity files will be stored
+    pub fn new(storage_path: PathBuf) -> Self {
+        Self { storage_path }
+    }
+
+    /// Get the path to the identity file
+    fn identity_path(&self) -> PathBuf {
+        self.storage_path.join("identity.enc")
+    }
+
+    /// Save an identity to storage
+    ///
+    /// If passphrase is None, the identity is stored unencrypted (for dev only).
+    ///
+    /// # Arguments
+    ///
+    /// * `identity` - The identity to save
+    /// * `passphrase` - Optional passphrase for encryption
+    pub async fn save_identity(
+        &self,
+        identity: &Identity,
+        passphrase: &Option<String>,
+    ) -> Result<()> {
+        let path = self.identity_path();
+        let passphrase = passphrase.as_deref().unwrap_or("");
+
+        // Run blocking I/O in a spawn_blocking task
+        #[cfg(feature = "tokio-runtime")]
+        {
+            let identity_clone = identity.export_encrypted(passphrase)?;
+            let path_clone = path.clone();
+            tokio::task::spawn_blocking(move || {
+                if let Some(parent) = path_clone.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                std::fs::write(&path_clone, &identity_clone)?;
+
+                // Set file permissions to user-read-only (Unix: 0600)
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let mut perms = std::fs::metadata(&path_clone)?.permissions();
+                    perms.set_mode(0o600);
+                    std::fs::set_permissions(&path_clone, perms)?;
+                }
+
+                Ok::<(), std::io::Error>(())
+            })
+            .await
+            .map_err(|e| StorageError::IoError {
+                message: format!("Task join error: {}", e),
+            })??;
+        }
+
+        #[cfg(not(feature = "tokio-runtime"))]
+        {
+            // Fallback: just call the sync version directly
+            save_identity(&path, identity, passphrase)?;
+        }
+
+        Ok(())
+    }
+
+    /// Load an identity from storage
+    ///
+    /// If passphrase is None, attempts to load unencrypted identity.
+    ///
+    /// # Arguments
+    ///
+    /// * `passphrase` - Optional passphrase for decryption
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the identity file doesn't exist or decryption fails.
+    pub async fn load_identity(&self, passphrase: &Option<String>) -> Result<Identity> {
+        let path = self.identity_path();
+        let passphrase = passphrase.as_deref().unwrap_or("").to_string();
+
+        // Run blocking I/O in a spawn_blocking task
+        #[cfg(feature = "tokio-runtime")]
+        {
+            let path_clone = path.clone();
+            tokio::task::spawn_blocking(move || load_identity(&path_clone, &passphrase))
+                .await
+                .map_err(|e| StorageError::IoError {
+                    message: format!("Task join error: {}", e),
+                })?
+        }
+
+        #[cfg(not(feature = "tokio-runtime"))]
+        {
+            load_identity(&path, &passphrase)
+        }
+    }
+
+    /// Check if an identity file exists
+    pub fn has_identity(&self) -> bool {
+        identity_exists(&self.identity_path())
+    }
 }
 
 #[cfg(test)]

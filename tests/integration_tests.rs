@@ -153,7 +153,7 @@ mod protocol_integration {
             message_id: message_id.as_bytes().to_vec(),
             message_type: MessageType::PrivateMessage as i32,
             timestamp: 1234567890,
-            sender_public_key: sender_pubkey.to_bytes()[..32].to_vec(), // Just signing key
+            sender_public_key: sender_pubkey.to_bytes(), // 64 bytes: Ed25519 + X25519
             payload: payload_bytes.clone(),
             signature: vec![0u8; 64], // Placeholder
             routing_info: None,
@@ -245,7 +245,7 @@ mod protocol_integration {
             message_id: vec![0u8; 32],
             message_type: MessageType::PrivateMessage as i32,
             timestamp: 1234567890,
-            sender_public_key: vec![1u8; 32],
+            sender_public_key: vec![1u8; 64],
             payload: vec![],
             signature: vec![3u8; 64],
             routing_info: None,

@@ -8,6 +8,7 @@
 #[allow(missing_docs)]
 mod meshara;
 
+pub mod messages;
 pub mod versioning;
 
 use prost::Message;
@@ -25,6 +26,10 @@ pub use versioning::{
     check_version_compatibility, is_message_type_supported, message_type_phase, validate_message,
     MessageValidationResult, VersionCompatibility, PROTOCOL_VERSION as VERSIONING_PROTOCOL_VERSION,
 };
+
+// Re-export message construction types (internal use)
+#[allow(unused_imports)]
+pub(crate) use messages::{MessageBuilder, MessageParser, ParsedMessage};
 
 /// Protocol-level errors
 #[derive(Error, Debug, Clone, PartialEq)]
@@ -154,10 +159,10 @@ pub fn validate_base_message(msg: &BaseMessage) -> Result<(), ProtocolError> {
         )));
     }
 
-    // Check sender_public_key length (should be 32 bytes for Ed25519)
-    if msg.sender_public_key.len() != 32 {
+    // Check sender_public_key length (should be 64 bytes: 32 for Ed25519 + 32 for X25519)
+    if msg.sender_public_key.len() != 64 {
         return Err(ProtocolError::InvalidFieldValue(format!(
-            "sender_public_key must be 32 bytes, got {}",
+            "sender_public_key must be 64 bytes, got {}",
             msg.sender_public_key.len()
         )));
     }
@@ -188,7 +193,7 @@ mod tests {
             message_id: vec![0u8; 32],
             message_type: MessageType::PrivateMessage as i32,
             timestamp: 1234567890,
-            sender_public_key: vec![1u8; 32],
+            sender_public_key: vec![1u8; 64],
             payload: vec![2u8; 100],
             signature: vec![3u8; 64],
             routing_info: None,
@@ -327,7 +332,7 @@ mod tests {
             message_id: vec![0u8; 32],
             message_type: MessageType::PrivateMessage as i32,
             timestamp: 1234567890,
-            sender_public_key: vec![1u8; 32],
+            sender_public_key: vec![1u8; 64],
             payload: vec![0u8; MAX_MESSAGE_SIZE + 1],
             signature: vec![3u8; 64],
             routing_info: None,
@@ -344,7 +349,7 @@ mod tests {
             message_id: vec![0u8; 32],
             message_type: MessageType::PrivateMessage as i32,
             timestamp: 1234567890,
-            sender_public_key: vec![1u8; 32],
+            sender_public_key: vec![1u8; 64], // 32 bytes Ed25519 + 32 bytes X25519
             payload: vec![2u8; 100],
             signature: vec![3u8; 64],
             routing_info: None,
@@ -392,7 +397,7 @@ mod tests {
             message_id: vec![0u8; 32],
             message_type: MessageType::PrivateMessage as i32,
             timestamp: 1234567890,
-            sender_public_key: vec![1u8; 32],
+            sender_public_key: vec![1u8; 64],
             payload: vec![2u8; 100],
             signature: vec![3u8; 64],
             routing_info: Some(routing),

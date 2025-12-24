@@ -9,7 +9,7 @@
 //!
 //! #[tokio::main]
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {
-//!     let node = NodeBuilder::new()
+//!     let mut node = NodeBuilder::new()
 //!         .with_storage_path("./meshara-data")
 //!         .build()?;
 //!
@@ -31,7 +31,11 @@ pub mod routing;
 pub mod storage;
 
 // Re-export main types
-pub use api::{Node, NodeBuilder};
+pub use api::{
+    Event, MessageId, NetworkProfile, Node, NodeBuilder, NodeId, NodeRegistry, NodeState,
+    PrivacyLevel, SubscriptionHandle,
+};
+pub use crypto::{Identity, PublicKey};
 pub use error::{
     AuthorityError, ConfigError, CryptoError, MesharaError, NetworkError, ProtocolError, Result,
     RoutingError, StorageError,

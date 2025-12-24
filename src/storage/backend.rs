@@ -75,18 +75,17 @@ impl FileSystemStorage {
     /// ```
     pub fn new(base_path: &Path) -> Result<Self> {
         // Create directory if it doesn't exist
-        std::fs::create_dir_all(base_path).map_err(|e| StorageError::IoError { source: e })?;
+        std::fs::create_dir_all(base_path).map_err(StorageError::from)?;
 
         // Set directory permissions to user-only (0700 on Unix)
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             let mut perms = std::fs::metadata(base_path)
-                .map_err(|e| StorageError::IoError { source: e })?
+                .map_err(StorageError::from)?
                 .permissions();
             perms.set_mode(0o700);
-            std::fs::set_permissions(base_path, perms)
-                .map_err(|e| StorageError::IoError { source: e })?;
+            std::fs::set_permissions(base_path, perms).map_err(StorageError::from)?;
         }
 
         Ok(Self {
@@ -106,11 +105,11 @@ impl StorageBackend for FileSystemStorage {
 
         // Create parent directories if needed
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| StorageError::IoError { source: e })?;
+            std::fs::create_dir_all(parent).map_err(StorageError::from)?;
         }
 
         // Write data
-        std::fs::write(&path, value).map_err(|e| StorageError::IoError { source: e })?;
+        std::fs::write(&path, value).map_err(StorageError::from)?;
 
         Ok(())
     }
@@ -122,7 +121,7 @@ impl StorageBackend for FileSystemStorage {
             return Err(StorageError::FileNotFound { path: path.clone() }.into());
         }
 
-        std::fs::read(&path).map_err(|e| StorageError::IoError { source: e }.into())
+        std::fs::read(&path).map_err(|e| StorageError::from(e).into())
     }
 
     fn exists(&self, key: &str) -> bool {
@@ -137,7 +136,7 @@ impl StorageBackend for FileSystemStorage {
             return Err(StorageError::FileNotFound { path: path.clone() }.into());
         }
 
-        std::fs::remove_file(&path).map_err(|e| StorageError::IoError { source: e })?;
+        std::fs::remove_file(&path).map_err(StorageError::from)?;
 
         Ok(())
     }
