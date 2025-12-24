@@ -392,7 +392,6 @@ impl PartialEq for PublicKey {
 
 impl Eq for PublicKey {}
 
-#[cfg(feature = "dht")]
 impl serde::Serialize for PublicKey {
     fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
     where
@@ -402,7 +401,6 @@ impl serde::Serialize for PublicKey {
     }
 }
 
-#[cfg(feature = "dht")]
 impl<'de> serde::Deserialize<'de> for PublicKey {
     fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
     where

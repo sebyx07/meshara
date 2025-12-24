@@ -35,6 +35,11 @@ pub use api::{
     Event, MessageId, NetworkProfile, Node, NodeBuilder, NodeId, NodeRegistry, NodeState,
     PrivacyLevel, SubscriptionHandle,
 };
+pub use authority::{
+    add_signature, generate_query_id, meets_version_requirement, verify_update_package,
+    AuthorityId, AuthorityIdentity, AuthorityMetadata, AuthorityTrustStore, QueryEvent,
+    QueryResponse, QueryType, TrustLevel, TrustedAuthority, UpdateInfo, UpdatePackageBuilder,
+};
 pub use crypto::{Identity, PublicKey};
 pub use error::{
     AuthorityError, ConfigError, CryptoError, MesharaError, NetworkError, ProtocolError, Result,

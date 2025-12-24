@@ -73,10 +73,7 @@ impl DhtNode {
     /// # Arguments
     /// * `_identity` - This node's identity (unused in simplified implementation)
     /// * `_bootstrap_peers` - List of bootstrap nodes (unused in simplified implementation)
-    pub fn new(
-        _identity: &crate::crypto::Identity,
-        _bootstrap_peers: Vec<String>,
-    ) -> Result<Self> {
+    pub fn new(_identity: &crate::crypto::Identity, _bootstrap_peers: Vec<String>) -> Result<Self> {
         Ok(Self {
             storage: Arc::new(DashMap::new()),
         })
@@ -111,12 +108,11 @@ impl DhtHandle {
     /// Store a key-value pair in the DHT
     pub async fn put(&self, key: Vec<u8>, value: Vec<u8>) -> Result<()> {
         use crate::error::ProtocolError;
-        let contact_info: ContactInfo = bincode::deserialize(&value).map_err(|e| {
-            ProtocolError::SerializationFailed {
+        let contact_info: ContactInfo =
+            bincode::deserialize(&value).map_err(|e| ProtocolError::SerializationFailed {
                 message_type: "ContactInfo".to_string(),
                 reason: e.to_string(),
-            }
-        })?;
+            })?;
         self.storage.insert(key, contact_info);
         Ok(())
     }
@@ -154,12 +150,11 @@ pub async fn advertise_self(
 ) -> Result<()> {
     use crate::error::ProtocolError;
     let contact_info = ContactInfo::new(address, public_key.clone());
-    let value = bincode::serialize(&contact_info).map_err(|e| {
-        ProtocolError::SerializationFailed {
+    let value =
+        bincode::serialize(&contact_info).map_err(|e| ProtocolError::SerializationFailed {
             message_type: "ContactInfo".to_string(),
             reason: e.to_string(),
-        }
-    })?;
+        })?;
     dht.put(node_id.as_bytes().to_vec(), value).await
 }
 
@@ -170,12 +165,11 @@ pub async fn find_peer(dht: &DhtHandle, node_id: &NodeId) -> Result<Option<Conta
     let value = dht.get(node_id.as_bytes().to_vec()).await?;
 
     if let Some(bytes) = value {
-        let contact_info: ContactInfo = bincode::deserialize(&bytes).map_err(|e| {
-            ProtocolError::SerializationFailed {
+        let contact_info: ContactInfo =
+            bincode::deserialize(&bytes).map_err(|e| ProtocolError::SerializationFailed {
                 message_type: "ContactInfo".to_string(),
                 reason: e.to_string(),
-            }
-        })?;
+            })?;
         if contact_info.is_stale() {
             return Ok(None);
         }
