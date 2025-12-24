@@ -48,6 +48,7 @@ tokio-rustls = { version = "0.26", optional = true }
 rustls = "0.23"
 rustls-pki-types = { version = "1.10", features = ["std"] }
 webpki-roots = "1.0"
+rcgen = "0.13"
 
 # HTTP/2 (optional)
 h2 = { version = "0.4", optional = true }
@@ -73,6 +74,7 @@ bytes = "1.9"
 futures = "0.3"
 parking_lot = "0.12"
 dashmap = "6.1"
+time = "0.3"
 
 # Storage
 redb = { version = "3.1", optional = true }

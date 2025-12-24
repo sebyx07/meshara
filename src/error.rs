@@ -427,6 +427,65 @@ pub enum NetworkError {
         reason: String,
     },
 
+    /// TLS handshake failed
+    ///
+    /// This occurs during TLS handshake phase.
+    /// Can indicate version mismatch, cipher suite issues, etc.
+    ///
+    /// This error is NOT retryable - indicates TLS configuration issue.
+    #[error("TLS handshake failed: {reason}")]
+    TlsHandshakeFailed {
+        /// Reason why handshake failed
+        reason: String,
+    },
+
+    /// Certificate error
+    ///
+    /// This occurs when certificate validation or generation fails.
+    /// Can indicate expired certificate, invalid signature, etc.
+    ///
+    /// This error is NOT retryable - requires certificate fix.
+    #[error("Certificate error: {reason}")]
+    CertificateError {
+        /// Reason for certificate error
+        reason: String,
+    },
+
+    /// ALPN protocol negotiation failed
+    ///
+    /// This occurs when TLS ALPN doesn't match expected protocol.
+    /// Indicates connection from non-Meshara client or version mismatch.
+    ///
+    /// This error is NOT retryable - protocol mismatch.
+    #[error("Invalid ALPN: expected '{expected}', got '{got}'")]
+    InvalidAlpn {
+        /// ALPN protocol received
+        got: String,
+        /// Expected ALPN protocol
+        expected: String,
+    },
+
+    /// Message size exceeds maximum allowed
+    ///
+    /// This occurs at network layer before deserialization.
+    /// Prevents DoS attacks via oversized messages.
+    ///
+    /// This error is NOT retryable - message must be rejected.
+    #[error("Message too large: {size} bytes exceeds maximum")]
+    MessageTooLarge {
+        /// Actual message size in bytes
+        size: usize,
+    },
+
+    /// Connection was reset
+    ///
+    /// This occurs when connection is abruptly terminated.
+    /// Can indicate network issues or peer crash.
+    ///
+    /// This error IS retryable - can reconnect.
+    #[error("Connection reset")]
+    ConnectionReset,
+
     /// Invalid network address provided
     ///
     /// This occurs when an address cannot be parsed or is malformed.
@@ -739,6 +798,7 @@ impl MesharaError {
                 NetworkError::Timeout { .. }
                     | NetworkError::ConnectionFailed { .. }
                     | NetworkError::ConnectionClosed { .. }
+                    | NetworkError::ConnectionReset
                     | NetworkError::PeerUnreachable { .. }
             ),
 
@@ -818,6 +878,11 @@ impl MesharaError {
                 NetworkError::ConnectionClosed { .. } => "NETWORK_CONNECTION_CLOSED",
                 NetworkError::Timeout { .. } => "NETWORK_TIMEOUT",
                 NetworkError::TlsError { .. } => "NETWORK_TLS_ERROR",
+                NetworkError::TlsHandshakeFailed { .. } => "NETWORK_TLS_HANDSHAKE_FAILED",
+                NetworkError::CertificateError { .. } => "NETWORK_CERTIFICATE_ERROR",
+                NetworkError::InvalidAlpn { .. } => "NETWORK_INVALID_ALPN",
+                NetworkError::MessageTooLarge { .. } => "NETWORK_MESSAGE_TOO_LARGE",
+                NetworkError::ConnectionReset => "NETWORK_CONNECTION_RESET",
                 NetworkError::InvalidAddress { .. } => "NETWORK_INVALID_ADDRESS",
                 NetworkError::PeerUnreachable { .. } => "NETWORK_PEER_UNREACHABLE",
                 NetworkError::SendFailed { .. } => "NETWORK_SEND_FAILED",
