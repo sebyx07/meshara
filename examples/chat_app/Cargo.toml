@@ -2,7 +2,7 @@
 name = "meshara-chat"
 version = "0.1.0"
 edition = "2021"
-authors = ["sebi <sebastian@venom.is>"]
+authors = ["sebi"]
 license = "MIT"
 description = "Example chat application using Meshara library"
 

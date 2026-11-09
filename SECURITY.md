@@ -17,7 +17,7 @@ Once we reach 1.0.0, we will maintain security updates for the current major ver
 
 ### For Security Issues
 
-Email security reports to: **sebastian@venom.is**
+Report it privately through GitHub: **[open a private security advisory](https://github.com/sebyx07/meshara/security/advisories/new)**
 
 Include:
 - Description of the vulnerability
@@ -149,7 +149,7 @@ Planned security enhancements:
 
 ## Contact
 
-Security email: sebastian@venom.is
-Project maintainer: sebi (sebastian@venom.is)
+Security reports: [private security advisory](https://github.com/sebyx07/meshara/security/advisories/new)
+Project maintainer: sebi ([@sebyx07](https://github.com/sebyx07))
 
 Thank you for helping keep Meshara secure!
